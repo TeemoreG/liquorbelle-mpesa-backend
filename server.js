@@ -5,9 +5,22 @@ const cors = require('cors');
 
 const app = express();
 
-// ✅ FIXED: Configure CORS to allow your GitHub Pages domain
+// ✅ CORS configured to allow your GitHub Pages domain
+const allowedOrigins = [
+  'https://teemoreg.github.io',
+  'http://localhost:5500',
+  'http://127.0.0.1:5500'
+];
+
 app.use(cors({
-  origin: ['https://teemoreg.github.io', 'http://localhost:5500', 'http://127.0.0.1:5500'],
+  origin: function(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -48,7 +61,7 @@ function formatPhone(phone) {
 const pendingOrders = new Map();
 
 // STK Push endpoint
-app.options('/api/stkpush', cors()); // Enable preflight
+app.options('/api/stkpush', cors());
 app.post('/api/stkpush', async (req, res) => {
   try {
     const { phone, amount, orderId, customerName, address, items, subtotal, delivery, total } = req.body;
