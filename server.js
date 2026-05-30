@@ -4,14 +4,22 @@ const axios = require('axios');
 const cors = require('cors');
 
 const app = express();
-app.use(cors());
+
+// ✅ FIXED: Configure CORS to allow your GitHub Pages domain
+app.use(cors({
+  origin: ['https://teemoreg.github.io', 'http://localhost:5500', 'http://127.0.0.1:5500'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json());
 
-// ===== SAFARICOM DARAJA CREDENTIALS (from your sandbox) =====
+// ===== SAFARICOM DARAJA CREDENTIALS =====
 const CONSUMER_KEY = process.env.CONSUMER_KEY || 'YOUR_CONSUMER_KEY';
 const CONSUMER_SECRET = process.env.CONSUMER_SECRET || 'YOUR_CONSUMER_SECRET';
 const PASSKEY = process.env.PASSKEY || 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919';
-const SHORTCODE = process.env.SHORTCODE || '174379'; // sandbox shortcode
+const SHORTCODE = process.env.SHORTCODE || '174379';
 const BUSINESS_NUMBER = '254748894443';
 
 const baseURL = 'https://sandbox.safaricom.co.ke';
@@ -40,6 +48,7 @@ function formatPhone(phone) {
 const pendingOrders = new Map();
 
 // STK Push endpoint
+app.options('/api/stkpush', cors()); // Enable preflight
 app.post('/api/stkpush', async (req, res) => {
   try {
     const { phone, amount, orderId, customerName, address, items, subtotal, delivery, total } = req.body;
@@ -72,12 +81,12 @@ app.post('/api/stkpush', async (req, res) => {
 
     res.json({ success: true, checkoutRequestID: response.data.CheckoutRequestID });
   } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.status(500).json({ success: false, message: 'Payment initiation failed' });
+    console.error('STK Push Error:', err.response?.data || err.message);
+    res.status(500).json({ success: false, message: err.response?.data?.errorMessage || 'Payment initiation failed' });
   }
 });
 
-// Callback endpoint (M-PESA sends result here)
+// Callback endpoint
 app.post('/api/callback', async (req, res) => {
   const callback = req.body;
   const stkCallback = callback?.Body?.stkCallback;
@@ -109,7 +118,7 @@ app.post('/api/callback', async (req, res) => {
   res.json({ ResultCode: 0 });
 });
 
-// Status endpoint for frontend polling
+// Status endpoint
 app.get('/api/status/:orderId', (req, res) => {
   const order = pendingOrders.get(req.params.orderId);
   if (order && order.paid) {
