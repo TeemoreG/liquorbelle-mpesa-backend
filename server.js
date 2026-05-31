@@ -2,33 +2,13 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const nodemailer = require('nodemailer');
 
 const app = express();
-
-// ✅ CORS configured to allow your GitHub Pages domain
-const allowedOrigins = [
-  'https://teemoreg.github.io',
-  'http://localhost:5500',
-  'http://127.0.0.1:5500'
-];
-
-app.use(cors({
-  origin: function(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
+app.use(cors());
 app.use(express.json());
 
-// ===== SAFARICOM DARAJA CREDENTIALS =====
+// ==================== SAFARICOM DARAJA CREDENTIALS ====================
 const CONSUMER_KEY = process.env.CONSUMER_KEY || 'YOUR_CONSUMER_KEY';
 const CONSUMER_SECRET = process.env.CONSUMER_SECRET || 'YOUR_CONSUMER_SECRET';
 const PASSKEY = process.env.PASSKEY || 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919';
@@ -60,8 +40,7 @@ function formatPhone(phone) {
 
 const pendingOrders = new Map();
 
-// STK Push endpoint
-app.options('/api/stkpush', cors());
+// ==================== STK PUSH ENDPOINT ====================
 app.post('/api/stkpush', async (req, res) => {
   try {
     const { phone, amount, orderId, customerName, address, items, subtotal, delivery, total } = req.body;
@@ -95,11 +74,11 @@ app.post('/api/stkpush', async (req, res) => {
     res.json({ success: true, checkoutRequestID: response.data.CheckoutRequestID });
   } catch (err) {
     console.error('STK Push Error:', err.response?.data || err.message);
-    res.status(500).json({ success: false, message: err.response?.data?.errorMessage || 'Payment initiation failed' });
+    res.status(500).json({ success: false, message: 'Payment initiation failed' });
   }
 });
 
-// Callback endpoint
+// ==================== M-PESA CALLBACK ENDPOINT ====================
 app.post('/api/callback', async (req, res) => {
   const callback = req.body;
   const stkCallback = callback?.Body?.stkCallback;
@@ -131,7 +110,7 @@ app.post('/api/callback', async (req, res) => {
   res.json({ ResultCode: 0 });
 });
 
-// Status endpoint
+// ==================== PAYMENT STATUS ENDPOINT ====================
 app.get('/api/status/:orderId', (req, res) => {
   const order = pendingOrders.get(req.params.orderId);
   if (order && order.paid) {
@@ -142,5 +121,72 @@ app.get('/api/status/:orderId', (req, res) => {
   }
 });
 
+// ==================== EMAIL OTP (BREVO) ====================
+const emailTransporter = nodemailer.createTransport({
+  host: 'smtp-relay.brevo.com',
+  port: 587,
+  auth: {
+    user: process.env.BREVO_USER || 'ad17af001@smtp-brevo.com',
+    pass: process.env.BREVO_PASSWORD || 'your-smtp-key'
+  }
+});
+
+const otpStore = new Map();
+
+app.post('/api/send-email-otp', async (req, res) => {
+  const { email, otp } = req.body;
+  if (!email) return res.json({ success: false, message: 'Email required' });
+  
+  const expiresAt = Date.now() + 10 * 60 * 1000;
+  otpStore.set(email, { otp, expiresAt });
+  
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="UTF-8"></head>
+    <body style="font-family: 'Plus Jakarta Sans', Arial, sans-serif; background: #0a0a0f; margin: 0; padding: 30px;">
+      <div style="max-width: 500px; margin: 0 auto; background: #111118; border-radius: 20px; padding: 30px; border: 1px solid #e03131;">
+        <img src="https://i.postimg.cc/PxwLVrdh/227a55e3-ad16-4893-9e87-03dfc202814f.png" alt="LiquorBelle" style="height: 50px; margin-bottom: 20px;">
+        <h2 style="color: #e03131; margin-bottom: 15px;">🔐 Your Verification Code</h2>
+        <div style="font-size: 42px; font-weight: 800; letter-spacing: 8px; background: #1e1e28; padding: 20px; text-align: center; border-radius: 12px; color: #f0a500;">${otp}</div>
+        <p style="color: #6b6780; margin: 20px 0 10px;">This code expires in <strong>10 minutes</strong>.</p>
+        <p style="color: #6b6780; font-size: 12px;">If you didn't request this, please ignore this email.</p>
+        <hr style="border-color: #1e1e28; margin: 20px 0;">
+        <p style="color: #6b6780; font-size: 11px;">LiquorBelle — Dagoretti's Finest</p>
+      </div>
+    </body>
+    </html>
+  `;
+  
+  try {
+    await emailTransporter.sendMail({
+      from: '"LiquorBelle" <noreply@liquorbelle.co.ke>',
+      to: email,
+      subject: '🔐 Your LiquorBelle Login Code',
+      html: html
+    });
+    res.json({ success: true, message: 'OTP sent to email' });
+  } catch (err) {
+    console.error('Email send error:', err);
+    res.json({ success: false, message: 'Failed to send email' });
+  }
+});
+
+app.post('/api/verify-otp', (req, res) => {
+  const { email, otp } = req.body;
+  const stored = otpStore.get(email);
+  
+  if (!stored) return res.json({ success: false, message: 'No OTP found. Request a new one.' });
+  if (Date.now() > stored.expiresAt) {
+    otpStore.delete(email);
+    return res.json({ success: false, message: 'OTP expired. Request a new one.' });
+  }
+  if (stored.otp !== otp) return res.json({ success: false, message: 'Invalid OTP. Try again.' });
+  
+  otpStore.delete(email);
+  res.json({ success: true, message: 'Verification successful' });
+});
+
+// ==================== START SERVER ====================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
