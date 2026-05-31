@@ -2,7 +2,6 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-const nodemailer = require('nodemailer');
 
 const app = express();
 app.use(cors());
@@ -58,7 +57,7 @@ app.post('/api/stkpush', async (req, res) => {
       PartyA: formattedPhone,
       PartyB: SHORTCODE,
       PhoneNumber: formattedPhone,
-      CallBackURL: `https://${req.get('host')}/api/callback`,
+      CallBackURL: `https://liquorbelle-mpesa-backend.onrender.com/api/callback`,
       AccountReference: orderId,
       TransactionDesc: `LiquorBelle Order ${orderId}`
     };
@@ -121,21 +120,18 @@ app.get('/api/status/:orderId', (req, res) => {
   }
 });
 
-// ==================== EMAIL OTP (BREVO) ====================
-const emailTransporter = nodemailer.createTransport({
-  host: 'smtp-relay.brevo.com',
-  port: 587,
-  auth: {
-    user: process.env.BREVO_USER || 'ad17af001@smtp-brevo.com',
-    pass: process.env.BREVO_PASSWORD || 'your-smtp-key'
-  }
-});
-
+// ==================== EMAIL OTP (BREVO API - NO SMTP) ====================
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
 const otpStore = new Map();
 
 app.post('/api/send-email-otp', async (req, res) => {
   const { email, otp } = req.body;
   if (!email) return res.json({ success: false, message: 'Email required' });
+  
+  if (!BREVO_API_KEY) {
+    console.error('❌ BREVO_API_KEY not configured');
+    return res.json({ success: false, message: 'Email service not configured' });
+  }
   
   const expiresAt = Date.now() + 10 * 60 * 1000;
   otpStore.set(email, { otp, expiresAt });
@@ -159,16 +155,23 @@ app.post('/api/send-email-otp', async (req, res) => {
   `;
   
   try {
-    await emailTransporter.sendMail({
-      from: '"LiquorBelle" <noreply@liquorbelle.co.ke>',
-      to: email,
+    const response = await axios.post('https://api.brevo.com/v3/smtp/email', {
+      sender: { name: 'LiquorBelle', email: 'timblax0@gmail.com' },
+      to: [{ email: email }],
       subject: '🔐 Your LiquorBelle Login Code',
-      html: html
+      htmlContent: html
+    }, {
+      headers: {
+        'api-key': BREVO_API_KEY,
+        'Content-Type': 'application/json'
+      }
     });
+    
+    console.log(`✅ OTP sent to ${email}`);
     res.json({ success: true, message: 'OTP sent to email' });
   } catch (err) {
-    console.error('Email send error:', err);
-    res.json({ success: false, message: 'Failed to send email' });
+    console.error('❌ Brevo API Error:', err.response?.data || err.message);
+    res.json({ success: false, message: 'Failed to send email. Please try again.' });
   }
 });
 
@@ -187,6 +190,19 @@ app.post('/api/verify-otp', (req, res) => {
   res.json({ success: true, message: 'Verification successful' });
 });
 
+// ==================== HEALTH CHECK ENDPOINT ====================
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    brevoConfigured: !!BREVO_API_KEY,
+    message: 'LiquorBelle API is running'
+  });
+});
+
 // ==================== START SERVER ====================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📧 Brevo API Key: ${BREVO_API_KEY ? '✅ Configured' : '❌ Missing'}`);
+  console.log(`💳 M-PESA: ${CONSUMER_KEY ? '✅ Configured' : '❌ Missing'}`);
+});
