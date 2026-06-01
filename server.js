@@ -4,7 +4,7 @@ const axios = require('axios');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
-const { pool, initDB, getAllProducts, updateProduct, createProduct, deleteProduct, getAllOrders, updateOrderStatus, createOrder, getDashboardStats } = require('./db');
+const { pool, initDB, getAllProducts, updateProduct, createProduct, deleteProduct, getAllOrders, updateOrderStatus, createOrder, getDashboardStats, createUser, verifyUserPassword, getUserByEmail, updateUserLastLogin } = require('./db');
 
 // Initialize database on startup
 initDB();
@@ -73,6 +73,57 @@ function formatPhone(phone) {
 }
 
 const pendingOrders = new Map();
+
+// ==================== AUTHENTICATION ENDPOINTS ====================
+
+// Register new user
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { email, password, phone, name } = req.body;
+    
+    if (!email || !password) {
+      return res.json({ success: false, message: 'Email and password required' });
+    }
+    
+    const existingUser = await getUserByEmail(email);
+    if (existingUser) {
+      return res.json({ success: false, message: 'Email already registered' });
+    }
+    
+    const newUser = await createUser(email, password, phone, name || email.split('@')[0]);
+    
+    res.json({ success: true, user: newUser });
+  } catch (err) {
+    console.error('Register error:', err);
+    res.status(500).json({ success: false, message: 'Registration failed' });
+  }
+});
+
+// Login user
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    if (!email || !password) {
+      return res.json({ success: false, message: 'Email and password required' });
+    }
+    
+    const user = await verifyUserPassword(email, password);
+    if (!user) {
+      return res.json({ success: false, message: 'Invalid email or password' });
+    }
+    
+    await updateUserLastLogin(user.id);
+    
+    res.json({ 
+      success: true, 
+      user: { id: user.id, email: user.email, name: user.name, phone: user.phone }
+    });
+  } catch (err) {
+    console.error('Login error:', err);
+    res.status(500).json({ success: false, message: 'Login failed' });
+  }
+});
 
 // ==================== STK PUSH ENDPOINT ====================
 app.post('/api/stkpush',
@@ -308,7 +359,6 @@ app.post('/api/send-order-email', async (req, res) => {
 
 // ==================== DATABASE API ENDPOINTS ====================
 
-// Get all products
 app.get('/api/db/products', async (req, res) => {
   try {
     const products = await getAllProducts();
@@ -319,7 +369,6 @@ app.get('/api/db/products', async (req, res) => {
   }
 });
 
-// Create product
 app.post('/api/db/products', async (req, res) => {
   try {
     const product = await createProduct(req.body);
@@ -330,7 +379,6 @@ app.post('/api/db/products', async (req, res) => {
   }
 });
 
-// Update product
 app.put('/api/db/products/:id', async (req, res) => {
   try {
     const product = await updateProduct(req.params.id, req.body);
@@ -341,7 +389,6 @@ app.put('/api/db/products/:id', async (req, res) => {
   }
 });
 
-// Delete product
 app.delete('/api/db/products/:id', async (req, res) => {
   try {
     await deleteProduct(req.params.id);
@@ -352,7 +399,6 @@ app.delete('/api/db/products/:id', async (req, res) => {
   }
 });
 
-// Get all orders
 app.get('/api/db/orders', async (req, res) => {
   try {
     const orders = await getAllOrders();
@@ -363,7 +409,6 @@ app.get('/api/db/orders', async (req, res) => {
   }
 });
 
-// Create order
 app.post('/api/db/orders', async (req, res) => {
   try {
     const { orderNumber, userId, customerName, customerEmail, phone, address, notes, subtotal, delivery, total, paymentMethod, status, items } = req.body;
@@ -378,7 +423,6 @@ app.post('/api/db/orders', async (req, res) => {
   }
 });
 
-// Update order status
 app.put('/api/db/orders/:id/status', async (req, res) => {
   try {
     const { status } = req.body;
@@ -390,7 +434,6 @@ app.put('/api/db/orders/:id/status', async (req, res) => {
   }
 });
 
-// Get dashboard stats
 app.get('/api/db/stats', async (req, res) => {
   try {
     const stats = await getDashboardStats();
@@ -401,7 +444,6 @@ app.get('/api/db/stats', async (req, res) => {
   }
 });
 
-// Health check
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -412,13 +454,11 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Server Error:', err);
   res.status(500).json({ success: false, message: 'Internal server error' });
 });
 
-// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);

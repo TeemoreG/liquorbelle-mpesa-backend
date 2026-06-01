@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+const bcrypt = require('bcrypt');
 
 // Database connection pool
 const pool = new Pool({
@@ -13,11 +14,12 @@ const pool = new Pool({
 async function initDB() {
   const client = await pool.connect();
   try {
-    // Create users table
+    // Create users table with password field
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         email VARCHAR(255) UNIQUE NOT NULL,
+        password VARCHAR(255) NOT NULL,
         phone VARCHAR(20),
         name VARCHAR(100),
         created_at TIMESTAMP DEFAULT NOW(),
@@ -102,14 +104,15 @@ async function initDB() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_products_price ON products(price);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);`);
 
-    // Insert default admin user if not exists
+    // Insert default admin user with hashed password (admin123)
+    const adminPassword = await bcrypt.hash('admin123', 10);
     await client.query(`
-      INSERT INTO users (email, name, is_admin, created_at)
-      VALUES ('admin@liquorbelle.co.ke', 'Admin', TRUE, NOW())
+      INSERT INTO users (email, password, name, is_admin, created_at)
+      VALUES ('admin@liquorbelle.co.ke', $1, 'Admin', TRUE, NOW())
       ON CONFLICT (email) DO NOTHING;
-    `);
+    `, [adminPassword]);
 
-    // Insert default products if none exist (FULL 10 PRODUCTS)
+    // Insert default products if none exist
     const productCount = await client.query(`SELECT COUNT(*) FROM products;`);
     if (parseInt(productCount.rows[0].count) === 0) {
       await client.query(`
@@ -136,19 +139,29 @@ async function initDB() {
   }
 }
 
-// ==================== HELPER FUNCTIONS ====================
-async function getUserByEmail(email) {
-  const result = await pool.query(`SELECT * FROM users WHERE email = $1`, [email]);
+// ==================== AUTHENTICATION FUNCTIONS ====================
+async function createUser(email, password, phone, name) {
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const result = await pool.query(
+    `INSERT INTO users (email, password, phone, name, created_at, last_login) 
+     VALUES ($1, $2, $3, $4, NOW(), NOW()) 
+     RETURNING id, email, name, phone, created_at, is_admin`,
+    [email, hashedPassword, phone, name]
+  );
   return result.rows[0];
 }
 
-async function createUser(email, phone, name) {
-  const result = await pool.query(
-    `INSERT INTO users (email, phone, name, created_at, last_login) 
-     VALUES ($1, $2, $3, NOW(), NOW()) 
-     RETURNING *`,
-    [email, phone, name]
-  );
+async function verifyUserPassword(email, password) {
+  const result = await pool.query(`SELECT * FROM users WHERE email = $1`, [email]);
+  if (result.rows.length === 0) return null;
+  const user = result.rows[0];
+  const isValid = await bcrypt.compare(password, user.password);
+  if (!isValid) return null;
+  return user;
+}
+
+async function getUserByEmail(email) {
+  const result = await pool.query(`SELECT id, email, name, phone, created_at, last_login, is_admin FROM users WHERE email = $1`, [email]);
   return result.rows[0];
 }
 
@@ -156,6 +169,7 @@ async function updateUserLastLogin(userId) {
   await pool.query(`UPDATE users SET last_login = NOW() WHERE id = $1`, [userId]);
 }
 
+// ==================== ORDER FUNCTIONS ====================
 async function createOrder(orderData, items) {
   const client = await pool.connect();
   try {
@@ -253,6 +267,7 @@ async function updateOrderStatus(orderId, status) {
   return result.rows[0];
 }
 
+// ==================== PRODUCT FUNCTIONS ====================
 async function getAllProducts() {
   const result = await pool.query(`SELECT * FROM products ORDER BY id`);
   return result.rows;
@@ -301,6 +316,7 @@ async function deleteProduct(productId) {
   return result.rows[0];
 }
 
+// ==================== STATS FUNCTIONS ====================
 async function getDashboardStats() {
   const stats = await pool.query(`
     SELECT 
@@ -313,7 +329,7 @@ async function getDashboardStats() {
   return stats.rows[0];
 }
 
-// ==================== SEED ENDPOINT FUNCTION (optional, for manual seeding) ====================
+// ==================== SEED FUNCTION ====================
 async function seedProductsManually() {
   const client = await pool.connect();
   try {
@@ -344,8 +360,9 @@ async function seedProductsManually() {
 module.exports = {
   pool,
   initDB,
-  getUserByEmail,
   createUser,
+  verifyUserPassword,
+  getUserByEmail,
   updateUserLastLogin,
   createOrder,
   getOrdersByUser,
