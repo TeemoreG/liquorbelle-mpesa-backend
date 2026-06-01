@@ -33,12 +33,12 @@ async function initDB() {
       );
     `);
 
-    // Create products table
+    // Create products table with capacity column
     await client.query(`
       CREATE TABLE IF NOT EXISTS products (
         id SERIAL PRIMARY KEY,
         name VARCHAR(200) NOT NULL,
-        sub TEXT,
+        capacity VARCHAR(20),
         price INTEGER NOT NULL,
         category VARCHAR(50),
         badge VARCHAR(50),
@@ -116,17 +116,17 @@ async function initDB() {
     const productCount = await client.query(`SELECT COUNT(*) FROM products;`);
     if (parseInt(productCount.rows[0].count) === 0) {
       await client.query(`
-        INSERT INTO products (name, sub, price, category, badge, image, stock) VALUES
-        ('Johnnie Walker Black Label', 'Blended Scotch Whisky 750ml', 3500, 'whisky', 'hot', 'https://images.vivino.com/thumbs/ApnIiXjcT5Kc33OHgNb9dA_pb_x600.png', 15),
-        ('Jameson Irish Whiskey', 'Irish Whiskey 750ml', 3200, 'whisky', NULL, 'https://www.thewhiskyexchange.com/images/products/10399_full.jpg', 8),
-        ('Hennessy VS Cognac', 'Cognac 750ml', 5500, 'cognac', 'prem', NULL, 5),
-        ('Smirnoff Red Label', 'Vodka 750ml', 1800, 'vodka', NULL, NULL, 20),
-        ('Tusker Lager', 'Kenyan Beer 500ml', 230, 'beer', 'local', 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/Tusker_Lager_can.jpg/440px-Tusker_Lager_can.jpg', 50),
-        ('Gilbeys Gin', 'Gin 750ml', 1400, 'gin', 'local', NULL, 12),
-        ('Kenya Cane', 'Rum 750ml', 950, 'rum', 'local', NULL, 3),
-        ('Nederburg Rosé', 'Wine 750ml', 1500, 'wine', NULL, 'https://images.vivino.com/thumbs/Jm_O5e5yFTaj3Gi7TsNXhA_pb_x600.png', 0),
-        ('Moet & Chandon Brut', 'Champagne 750ml', 9500, 'champagne', 'prem', NULL, 2),
-        ('Kingfisher Whisky', 'Kenyan Whisky 750ml', 1800, 'kenyan', 'local', NULL, 7);
+        INSERT INTO products (name, capacity, price, category, badge, image, stock) VALUES
+        ('Johnnie Walker Black Label', '750ml', 3500, 'whisky', 'hot', 'https://images.vivino.com/thumbs/ApnIiXjcT5Kc33OHgNb9dA_pb_x600.png', 1),
+        ('Jameson Irish Whiskey', '750ml', 3200, 'whisky', NULL, 'https://www.thewhiskyexchange.com/images/products/10399_full.jpg', 1),
+        ('Hennessy VS Cognac', '750ml', 5500, 'cognac', 'prem', NULL, 1),
+        ('Smirnoff Red Label', '750ml', 1800, 'vodka', NULL, NULL, 1),
+        ('Tusker Lager', '500ml', 230, 'beer', 'local', 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/Tusker_Lager_can.jpg/440px-Tusker_Lager_can.jpg', 1),
+        ('Gilbeys Gin', '750ml', 1400, 'gin', 'local', NULL, 1),
+        ('Kenya Cane', '750ml', 950, 'rum', 'local', NULL, 1),
+        ('Nederburg Rosé', '750ml', 1500, 'wine', NULL, 'https://images.vivino.com/thumbs/Jm_O5e5yFTaj3Gi7TsNXhA_pb_x600.png', 1),
+        ('Moet & Chandon Brut', '750ml', 9500, 'champagne', 'prem', NULL, 1),
+        ('Kingfisher Whisky', '750ml', 1800, 'kenyan', 'local', NULL, 1);
       `);
       console.log('✅ Seeded 10 default products to database');
     }
@@ -276,12 +276,12 @@ async function getAllProducts() {
 async function updateProduct(productId, productData) {
   const result = await pool.query(
     `UPDATE products 
-     SET name = $1, sub = $2, price = $3, category = $4, badge = $5, image = $6, stock = $7, updated_at = NOW()
+     SET name = $1, capacity = $2, price = $3, category = $4, badge = $5, image = $6, stock = $7, updated_at = NOW()
      WHERE id = $8
      RETURNING *`,
     [
       productData.name,
-      productData.sub,
+      productData.capacity,
       productData.price,
       productData.category,
       productData.badge,
@@ -295,12 +295,12 @@ async function updateProduct(productId, productData) {
 
 async function createProduct(productData) {
   const result = await pool.query(
-    `INSERT INTO products (name, sub, price, category, badge, image, stock, created_at)
+    `INSERT INTO products (name, capacity, price, category, badge, image, stock, created_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
      RETURNING *`,
     [
       productData.name,
-      productData.sub,
+      productData.capacity,
       productData.price,
       productData.category,
       productData.badge,
@@ -336,17 +336,17 @@ async function seedProductsManually() {
     const productCount = await client.query(`SELECT COUNT(*) FROM products;`);
     if (parseInt(productCount.rows[0].count) === 0) {
       await client.query(`
-        INSERT INTO products (name, sub, price, category, badge, image, stock) VALUES
-        ('Johnnie Walker Black Label', 'Blended Scotch Whisky 750ml', 3500, 'whisky', 'hot', 'https://images.vivino.com/thumbs/ApnIiXjcT5Kc33OHgNb9dA_pb_x600.png', 15),
-        ('Jameson Irish Whiskey', 'Irish Whiskey 750ml', 3200, 'whisky', NULL, 'https://www.thewhiskyexchange.com/images/products/10399_full.jpg', 8),
-        ('Hennessy VS Cognac', 'Cognac 750ml', 5500, 'cognac', 'prem', NULL, 5),
-        ('Smirnoff Red Label', 'Vodka 750ml', 1800, 'vodka', NULL, NULL, 20),
-        ('Tusker Lager', 'Kenyan Beer 500ml', 230, 'beer', 'local', 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/Tusker_Lager_can.jpg/440px-Tusker_Lager_can.jpg', 50),
-        ('Gilbeys Gin', 'Gin 750ml', 1400, 'gin', 'local', NULL, 12),
-        ('Kenya Cane', 'Rum 750ml', 950, 'rum', 'local', NULL, 3),
-        ('Nederburg Rosé', 'Wine 750ml', 1500, 'wine', NULL, 'https://images.vivino.com/thumbs/Jm_O5e5yFTaj3Gi7TsNXhA_pb_x600.png', 0),
-        ('Moet & Chandon Brut', 'Champagne 750ml', 9500, 'champagne', 'prem', NULL, 2),
-        ('Kingfisher Whisky', 'Kenyan Whisky 750ml', 1800, 'kenyan', 'local', NULL, 7);
+        INSERT INTO products (name, capacity, price, category, badge, image, stock) VALUES
+        ('Johnnie Walker Black Label', '750ml', 3500, 'whisky', 'hot', 'https://images.vivino.com/thumbs/ApnIiXjcT5Kc33OHgNb9dA_pb_x600.png', 1),
+        ('Jameson Irish Whiskey', '750ml', 3200, 'whisky', NULL, 'https://www.thewhiskyexchange.com/images/products/10399_full.jpg', 1),
+        ('Hennessy VS Cognac', '750ml', 5500, 'cognac', 'prem', NULL, 1),
+        ('Smirnoff Red Label', '750ml', 1800, 'vodka', NULL, NULL, 1),
+        ('Tusker Lager', '500ml', 230, 'beer', 'local', 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/Tusker_Lager_can.jpg/440px-Tusker_Lager_can.jpg', 1),
+        ('Gilbeys Gin', '750ml', 1400, 'gin', 'local', NULL, 1),
+        ('Kenya Cane', '750ml', 950, 'rum', 'local', NULL, 1),
+        ('Nederburg Rosé', '750ml', 1500, 'wine', NULL, 'https://images.vivino.com/thumbs/Jm_O5e5yFTaj3Gi7TsNXhA_pb_x600.png', 1),
+        ('Moet & Chandon Brut', '750ml', 9500, 'champagne', 'prem', NULL, 1),
+        ('Kingfisher Whisky', '750ml', 1800, 'kenyan', 'local', NULL, 1);
       `);
       console.log('✅ Manually seeded 10 products');
       return true;
