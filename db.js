@@ -14,10 +14,7 @@ const pool = new Pool({
 async function initDB() {
   const client = await pool.connect();
   try {
-    // FORCE RECREATE PRODUCTS TABLE - This will delete old products and add capacity column
-    await client.query(`DROP TABLE IF EXISTS products CASCADE;`);
-    
-    // Create users table with password field
+    // Create users table
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -36,7 +33,7 @@ async function initDB() {
       );
     `);
 
-    // Create products table with capacity column
+    // Create products table - NO DROP, preserve existing data
     await client.query(`
       CREATE TABLE IF NOT EXISTS products (
         id SERIAL PRIMARY KEY,
@@ -51,6 +48,16 @@ async function initDB() {
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );
+    `);
+
+    // Add capacity column if missing (migration)
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='products' AND column_name='capacity') THEN
+          ALTER TABLE products ADD COLUMN capacity VARCHAR(20);
+        END IF;
+      END $$;
     `);
 
     // Create orders table
@@ -107,29 +114,66 @@ async function initDB() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_products_price ON products(price);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);`);
 
-    // Insert default admin user with hashed password (admin123)
-    const adminPassword = await bcrypt.hash('admin123', 10);
-    await client.query(`
-      INSERT INTO users (email, password, name, is_admin, created_at)
-      VALUES ('admin@liquorbelle.co.ke', $1, 'Admin', TRUE, NOW())
-      ON CONFLICT (email) DO NOTHING;
-    `, [adminPassword]);
+    // Insert default admin user if not exists
+    const adminCheck = await client.query(`SELECT * FROM users WHERE email = 'admin@liquorbelle.co.ke'`);
+    if (adminCheck.rows.length === 0) {
+      const adminPassword = await bcrypt.hash('admin123', 10);
+      await client.query(`
+        INSERT INTO users (email, password, name, is_admin, created_at)
+        VALUES ('admin@liquorbelle.co.ke', $1, 'Admin', TRUE, NOW())
+      `, [adminPassword]);
+      console.log('✅ Admin user created');
+    }
 
-    // Insert default products with capacities
-    await client.query(`
-      INSERT INTO products (name, capacity, price, category, badge, image, stock) VALUES
-      ('Johnnie Walker Black Label', '750ml', 3500, 'whisky', 'hot', 'https://images.vivino.com/thumbs/ApnIiXjcT5Kc33OHgNb9dA_pb_x600.png', 1),
-      ('Jameson Irish Whiskey', '750ml', 3200, 'whisky', NULL, 'https://www.thewhiskyexchange.com/images/products/10399_full.jpg', 1),
-      ('Hennessy VS Cognac', '750ml', 5500, 'cognac', 'prem', NULL, 1),
-      ('Smirnoff Red Label', '750ml', 1800, 'vodka', NULL, NULL, 1),
-      ('Tusker Lager', '500ml', 230, 'beer', 'local', 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/Tusker_Lager_can.jpg/440px-Tusker_Lager_can.jpg', 1),
-      ('Gilbeys Gin', '750ml', 1400, 'gin', 'local', NULL, 1),
-      ('Kenya Cane', '750ml', 950, 'rum', 'local', NULL, 1),
-      ('Nederburg Rosé', '750ml', 1500, 'wine', NULL, 'https://images.vivino.com/thumbs/Jm_O5e5yFTaj3Gi7TsNXhA_pb_x600.png', 1),
-      ('Moet & Chandon Brut', '750ml', 9500, 'champagne', 'prem', NULL, 1),
-      ('Kingfisher Whisky', '750ml', 1800, 'kenyan', 'local', NULL, 1);
-    `);
-    console.log('✅ Seeded 10 default products to database');
+    // Check if products table is empty before seeding
+    const productCount = await client.query(`SELECT COUNT(*) FROM products`);
+    if (parseInt(productCount.rows[0].count) === 0) {
+      // Insert 20 products with working images
+      await client.query(`
+        INSERT INTO products (name, capacity, price, category, badge, image, stock) VALUES
+        -- WHISKY (5)
+        ('Johnnie Walker Black Label', '750ml', 3500, 'whisky', 'hot', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
+        ('Jameson Irish Whiskey', '750ml', 3200, 'whisky', NULL, 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
+        ('Jack Daniels Old No.7', '750ml', 3800, 'whisky', 'hot', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
+        ('Chivas Regal 12', '750ml', 4200, 'whisky', 'prem', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
+        ('Ballantine''s Finest', '750ml', 2800, 'whisky', NULL, 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
+        
+        -- COGNAC / BRANDY (3)
+        ('Hennessy VS', '750ml', 5500, 'cognac', 'prem', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
+        ('Rémy Martin VSOP', '750ml', 6800, 'cognac', 'prem', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
+        ('Martell VS', '750ml', 5200, 'cognac', NULL, 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
+        
+        -- VODKA (3)
+        ('Smirnoff Red', '750ml', 1800, 'vodka', NULL, 'https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop', 1),
+        ('Absolut Vodka', '750ml', 2200, 'vodka', NULL, 'https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop', 1),
+        ('Ciroc Vodka', '750ml', 3500, 'vodka', 'prem', 'https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop', 1),
+        
+        -- GIN (2)
+        ('Gilbeys Gin', '750ml', 1400, 'gin', 'local', 'https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop', 1),
+        ('Bombay Sapphire', '750ml', 2900, 'gin', NULL, 'https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop', 1),
+        
+        -- RUM (2)
+        ('Kenya Cane', '750ml', 950, 'rum', 'local', 'https://images.unsplash.com/photo-1565277408825-5da2b2a4b1dd?w=300&h=300&fit=crop', 1),
+        ('Captain Morgan', '750ml', 2100, 'rum', NULL, 'https://images.unsplash.com/photo-1565277408825-5da2b2a4b1dd?w=300&h=300&fit=crop', 1),
+        
+        -- WINE (2)
+        ('Nederburg Rosé', '750ml', 1500, 'wine', NULL, 'https://images.unsplash.com/photo-1506377247377-2a5b3b417ebb?w=300&h=300&fit=crop', 1),
+        ('Jacobs Creek Moscato', '750ml', 1300, 'wine', NULL, 'https://images.unsplash.com/photo-1506377247377-2a5b3b417ebb?w=300&h=300&fit=crop', 1),
+        
+        -- BEER (2)
+        ('Tusker Lager', '500ml', 230, 'beer', 'local', 'https://images.unsplash.com/photo-1561758033-d89a9ad46330?w=300&h=300&fit=crop', 1),
+        ('Guinness Stout', '500ml', 350, 'beer', NULL, 'https://images.unsplash.com/photo-1561758033-d89a9ad46330?w=300&h=300&fit=crop', 1),
+        
+        -- CHAMPAGNE (1)
+        ('Moet & Chandon Brut', '750ml', 9500, 'champagne', 'prem', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
+        
+        -- KENYAN SPIRITS (1)
+        ('Kingfisher Whisky', '750ml', 1800, 'kenyan', 'local', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1);
+      `);
+      console.log('✅ Seeded 20 products to database');
+    } else {
+      console.log(`✅ Products table already has ${productCount.rows[0].count} products, skipping seed`);
+    }
 
     console.log('✅ Database initialized successfully');
   } catch (err) {
@@ -329,34 +373,6 @@ async function getDashboardStats() {
   return stats.rows[0];
 }
 
-// ==================== SEED FUNCTION ====================
-async function seedProductsManually() {
-  const client = await pool.connect();
-  try {
-    const productCount = await client.query(`SELECT COUNT(*) FROM products;`);
-    if (parseInt(productCount.rows[0].count) === 0) {
-      await client.query(`
-        INSERT INTO products (name, capacity, price, category, badge, image, stock) VALUES
-        ('Johnnie Walker Black Label', '750ml', 3500, 'whisky', 'hot', 'https://images.vivino.com/thumbs/ApnIiXjcT5Kc33OHgNb9dA_pb_x600.png', 1),
-        ('Jameson Irish Whiskey', '750ml', 3200, 'whisky', NULL, 'https://www.thewhiskyexchange.com/images/products/10399_full.jpg', 1),
-        ('Hennessy VS Cognac', '750ml', 5500, 'cognac', 'prem', NULL, 1),
-        ('Smirnoff Red Label', '750ml', 1800, 'vodka', NULL, NULL, 1),
-        ('Tusker Lager', '500ml', 230, 'beer', 'local', 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/Tusker_Lager_can.jpg/440px-Tusker_Lager_can.jpg', 1),
-        ('Gilbeys Gin', '750ml', 1400, 'gin', 'local', NULL, 1),
-        ('Kenya Cane', '750ml', 950, 'rum', 'local', NULL, 1),
-        ('Nederburg Rosé', '750ml', 1500, 'wine', NULL, 'https://images.vivino.com/thumbs/Jm_O5e5yFTaj3Gi7TsNXhA_pb_x600.png', 1),
-        ('Moet & Chandon Brut', '750ml', 9500, 'champagne', 'prem', NULL, 1),
-        ('Kingfisher Whisky', '750ml', 1800, 'kenyan', 'local', NULL, 1);
-      `);
-      console.log('✅ Manually seeded 10 products');
-      return true;
-    }
-    return false;
-  } finally {
-    client.release();
-  }
-}
-
 module.exports = {
   pool,
   initDB,
@@ -372,6 +388,5 @@ module.exports = {
   updateProduct,
   createProduct,
   deleteProduct,
-  getDashboardStats,
-  seedProductsManually
+  getDashboardStats
 };

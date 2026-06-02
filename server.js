@@ -2,10 +2,9 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-const bcrypt = require('bcrypt');
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
-const { pool, initDB, getAllProducts, updateProduct, createProduct, deleteProduct, getAllOrders, updateOrderStatus, createOrder, getDashboardStats, createUser, verifyUserPassword, getUserByEmail, updateUserLastLogin } = require('./db');
+const { pool, initDB, getAllProducts, updateProduct, createProduct, deleteProduct, getAllOrders, updateOrderStatus, createOrder, getDashboardStats } = require('./db');
 
 // Initialize database on startup
 initDB();
@@ -75,93 +74,23 @@ function formatPhone(phone) {
 
 const pendingOrders = new Map();
 
-// ==================== AUTHENTICATION ENDPOINTS ====================
-
-app.post('/api/auth/register', async (req, res) => {
+// ==================== EMAIL ORDER LOOKUP ====================
+app.get('/api/orders/by-email/:email', async (req, res) => {
   try {
-    const { email, password, phone, name } = req.body;
-    
-    if (!email || !password) {
-      return res.json({ success: false, message: 'Email and password required' });
+    const { email } = req.params;
+    if (!email) {
+      return res.json({ success: false, message: 'Email required' });
     }
     
-    const existingUser = await getUserByEmail(email);
-    if (existingUser) {
-      return res.json({ success: false, message: 'Email already registered' });
-    }
+    const result = await pool.query(
+      `SELECT * FROM orders WHERE customer_email ILIKE $1 ORDER BY created_at DESC`,
+      [email]
+    );
     
-    const newUser = await createUser(email, password, phone, name || email.split('@')[0]);
-    
-    res.json({ success: true, user: newUser });
+    res.json({ success: true, orders: result.rows });
   } catch (err) {
-    console.error('Register error:', err);
-    res.status(500).json({ success: false, message: 'Registration failed' });
-  }
-});
-
-app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    
-    if (!email || !password) {
-      return res.json({ success: false, message: 'Email and password required' });
-    }
-    
-    const user = await verifyUserPassword(email, password);
-    if (!user) {
-      return res.json({ success: false, message: 'Invalid email or password' });
-    }
-    
-    await updateUserLastLogin(user.id);
-    
-    res.json({ 
-      success: true, 
-      user: { id: user.id, email: user.email, name: user.name, phone: user.phone }
-    });
-  } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ success: false, message: 'Login failed' });
-  }
-});
-
-app.post('/api/auth/reset-password', async (req, res) => {
-  try {
-    const { email, newPassword } = req.body;
-    
-    if (!email || !newPassword) {
-      return res.json({ success: false, message: 'Email and new password required' });
-    }
-    
-    if (newPassword.length < 6) {
-      return res.json({ success: false, message: 'Password must be at least 6 characters' });
-    }
-    
-    const user = await getUserByEmail(email);
-    if (!user) {
-      return res.json({ success: false, message: 'Account not found' });
-    }
-    
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await pool.query(`UPDATE users SET password = $1 WHERE email = $2`, [hashedPassword, email]);
-    
-    res.json({ success: true, message: 'Password reset successful' });
-  } catch (err) {
-    console.error('Reset password error:', err);
-    res.status(500).json({ success: false, message: 'Password reset failed' });
-  }
-});
-
-app.delete('/api/admin/clear-users', async (req, res) => {
-  try {
-    const secret = req.headers['admin-secret'];
-    if (secret !== 'LiquorBelleAdmin2026') {
-      return res.json({ success: false, message: 'Unauthorized' });
-    }
-    const result = await pool.query(`DELETE FROM users WHERE is_admin = FALSE RETURNING id`);
-    res.json({ success: true, message: `Cleared ${result.rowCount} non-admin users` });
-  } catch (err) {
-    console.error('Clear users error:', err);
-    res.status(500).json({ success: false, message: 'Failed to clear users' });
+    console.error('Email order lookup error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch orders' });
   }
 });
 
