@@ -1,13 +1,15 @@
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 
-// Database connection pool
+// Database connection pool - OPTIMIZED for Render free tier
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  max: 5,                    // Reduced from 10
+  idleTimeoutMillis: 5000,   // Reduced from 10000
+  connectionTimeoutMillis: 3000,  // Reduced from 5000
+  statement_timeout: 5000,    // ADDED - kills slow queries
+  query_timeout: 5000,        // ADDED - kills slow queries
 });
 
 // Initialize database tables
@@ -33,7 +35,7 @@ async function initDB() {
       );
     `);
 
-    // Create products table - NO DROP, preserve existing data
+    // Create products table
     await client.query(`
       CREATE TABLE IF NOT EXISTS products (
         id SERIAL PRIMARY KEY,
@@ -50,7 +52,7 @@ async function initDB() {
       );
     `);
 
-    // Add capacity column if missing (migration)
+    // Add capacity column if missing
     await client.query(`
       DO $$
       BEGIN
@@ -113,6 +115,7 @@ async function initDB() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_products_price ON products(price);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_orders_customer_email ON orders(customer_email);`);
 
     // Insert default admin user if not exists
     const adminCheck = await client.query(`SELECT * FROM users WHERE email = 'admin@liquorbelle.co.ke'`);
@@ -128,46 +131,28 @@ async function initDB() {
     // Check if products table is empty before seeding
     const productCount = await client.query(`SELECT COUNT(*) FROM products`);
     if (parseInt(productCount.rows[0].count) === 0) {
-      // Insert 20 products with working images
       await client.query(`
         INSERT INTO products (name, capacity, price, category, badge, image, stock) VALUES
-        -- WHISKY (5)
         ('Johnnie Walker Black Label', '750ml', 3500, 'whisky', 'hot', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
         ('Jameson Irish Whiskey', '750ml', 3200, 'whisky', NULL, 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
         ('Jack Daniels Old No.7', '750ml', 3800, 'whisky', 'hot', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
         ('Chivas Regal 12', '750ml', 4200, 'whisky', 'prem', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
         ('Ballantine''s Finest', '750ml', 2800, 'whisky', NULL, 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
-        
-        -- COGNAC / BRANDY (3)
         ('Hennessy VS', '750ml', 5500, 'cognac', 'prem', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
         ('Rémy Martin VSOP', '750ml', 6800, 'cognac', 'prem', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
         ('Martell VS', '750ml', 5200, 'cognac', NULL, 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
-        
-        -- VODKA (3)
         ('Smirnoff Red', '750ml', 1800, 'vodka', NULL, 'https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop', 1),
         ('Absolut Vodka', '750ml', 2200, 'vodka', NULL, 'https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop', 1),
         ('Ciroc Vodka', '750ml', 3500, 'vodka', 'prem', 'https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop', 1),
-        
-        -- GIN (2)
         ('Gilbeys Gin', '750ml', 1400, 'gin', 'local', 'https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop', 1),
         ('Bombay Sapphire', '750ml', 2900, 'gin', NULL, 'https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop', 1),
-        
-        -- RUM (2)
         ('Kenya Cane', '750ml', 950, 'rum', 'local', 'https://images.unsplash.com/photo-1565277408825-5da2b2a4b1dd?w=300&h=300&fit=crop', 1),
         ('Captain Morgan', '750ml', 2100, 'rum', NULL, 'https://images.unsplash.com/photo-1565277408825-5da2b2a4b1dd?w=300&h=300&fit=crop', 1),
-        
-        -- WINE (2)
         ('Nederburg Rosé', '750ml', 1500, 'wine', NULL, 'https://images.unsplash.com/photo-1506377247377-2a5b3b417ebb?w=300&h=300&fit=crop', 1),
         ('Jacobs Creek Moscato', '750ml', 1300, 'wine', NULL, 'https://images.unsplash.com/photo-1506377247377-2a5b3b417ebb?w=300&h=300&fit=crop', 1),
-        
-        -- BEER (2)
         ('Tusker Lager', '500ml', 230, 'beer', 'local', 'https://images.unsplash.com/photo-1561758033-d89a9ad46330?w=300&h=300&fit=crop', 1),
         ('Guinness Stout', '500ml', 350, 'beer', NULL, 'https://images.unsplash.com/photo-1561758033-d89a9ad46330?w=300&h=300&fit=crop', 1),
-        
-        -- CHAMPAGNE (1)
         ('Moet & Chandon Brut', '750ml', 9500, 'champagne', 'prem', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
-        
-        -- KENYAN SPIRITS (1)
         ('Kingfisher Whisky', '750ml', 1800, 'kenyan', 'local', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1);
       `);
       console.log('✅ Seeded 20 products to database');
@@ -292,13 +277,25 @@ async function getOrdersByUser(userId) {
 async function getAllOrders() {
   const result = await pool.query(
     `SELECT o.*, 
-      COALESCE(json_agg(oi.*) FILTER (WHERE oi.id IS NOT NULL), '[]') as items,
-      u.email as user_email
+      COALESCE(json_agg(oi.*) FILTER (WHERE oi.id IS NOT NULL), '[]') as items
      FROM orders o
      LEFT JOIN order_items oi ON o.id = oi.order_id
-     LEFT JOIN users u ON o.user_id = u.id
-     GROUP BY o.id, u.email
+     GROUP BY o.id
      ORDER BY o.created_at DESC`
+  );
+  return result.rows;
+}
+
+async function getOrdersByEmail(email) {
+  const result = await pool.query(
+    `SELECT o.*, 
+      COALESCE(json_agg(oi.*) FILTER (WHERE oi.id IS NOT NULL), '[]') as items
+     FROM orders o
+     LEFT JOIN order_items oi ON o.id = oi.order_id
+     WHERE o.customer_email ILIKE $1
+     GROUP BY o.id
+     ORDER BY o.created_at DESC`,
+    [email]
   );
   return result.rows;
 }
@@ -311,9 +308,23 @@ async function updateOrderStatus(orderId, status) {
   return result.rows[0];
 }
 
+async function getOrderById(orderId) {
+  const result = await pool.query(
+    `SELECT o.*, 
+      COALESCE(json_agg(oi.*) FILTER (WHERE oi.id IS NOT NULL), '[]') as items
+     FROM orders o
+     LEFT JOIN order_items oi ON o.id = oi.order_id
+     WHERE o.id = $1
+     GROUP BY o.id`,
+    [orderId]
+  );
+  return result.rows[0];
+}
+
 // ==================== PRODUCT FUNCTIONS ====================
 async function getAllProducts() {
-  const result = await pool.query(`SELECT * FROM products ORDER BY id`);
+  // Added LIMIT to prevent timeout on large datasets
+  const result = await pool.query(`SELECT * FROM products ORDER BY id LIMIT 200`);
   return result.rows;
 }
 
@@ -383,6 +394,8 @@ module.exports = {
   createOrder,
   getOrdersByUser,
   getAllOrders,
+  getOrdersByEmail,
+  getOrderById,
   updateOrderStatus,
   getAllProducts,
   updateProduct,

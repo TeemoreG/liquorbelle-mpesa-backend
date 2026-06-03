@@ -4,7 +4,7 @@ const axios = require('axios');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
-const { pool, initDB, getAllProducts, updateProduct, createProduct, deleteProduct, getAllOrders, updateOrderStatus, createOrder, getDashboardStats } = require('./db');
+const { pool, initDB, getAllProducts, updateProduct, createProduct, deleteProduct, getAllOrders, updateOrderStatus, createOrder, getDashboardStats, getOrderById } = require('./db');
 
 // Initialize database on startup
 initDB();
@@ -74,7 +74,18 @@ function formatPhone(phone) {
 
 const pendingOrders = new Map();
 
-// ==================== EMAIL ORDER LOOKUP ====================
+// ==================== HELPER FUNCTIONS ====================
+function escapeHtml(str) {
+  if (!str) return '';
+  return str.replace(/[&<>]/g, function(m) {
+    if (m === '&') return '&amp;';
+    if (m === '<') return '&lt;';
+    if (m === '>') return '&gt;';
+    return m;
+  });
+}
+
+// ==================== EMAIL ORDER LOOKUP (FIXED - WITH ITEMS) ====================
 app.get('/api/orders/by-email/:email', async (req, res) => {
   try {
     const { email } = req.params;
@@ -82,19 +93,85 @@ app.get('/api/orders/by-email/:email', async (req, res) => {
       return res.json({ success: false, message: 'Email required' });
     }
     
+    // Direct query to get orders WITH items
     const result = await pool.query(
-      `SELECT * FROM orders WHERE customer_email ILIKE $1 ORDER BY created_at DESC`,
+      `SELECT o.*, 
+        COALESCE(
+          (SELECT json_agg(row_to_json(oi)) FROM order_items oi WHERE oi.order_id = o.id),
+          '[]'::json
+        ) as items
+       FROM orders o
+       WHERE o.customer_email ILIKE $1
+       ORDER BY o.created_at DESC`,
       [email]
     );
     
     res.json({ success: true, orders: result.rows });
   } catch (err) {
     console.error('Email order lookup error:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch orders' });
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// ==================== STK PUSH ENDPOINT ====================
+// ==================== SEND ORDER PAID EMAIL ====================
+async function sendOrderPaidEmail(orderId, email, customerName, orderNumber, total, address) {
+  const BREVO_API_KEY = process.env.BREVO_API_KEY;
+  if (!BREVO_API_KEY) return;
+  
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="UTF-8"></head>
+    <body style="font-family: Arial, sans-serif; background: #0a0a0f; margin: 0; padding: 30px;">
+      <div style="max-width: 580px; margin: 0 auto; background: linear-gradient(135deg, #111118 0%, #17171f 100%); border-radius: 28px; padding: 32px; border: 1px solid rgba(46,204,113,0.3);">
+        <div style="text-align: center; margin-bottom: 28px;">
+          <img src="https://i.postimg.cc/PxwLVrdh/227a55e3-ad16-4893-9e87-03dfc202814f.png" alt="LiquorBelle" style="height: 55px;">
+          <div style="font-size: 1.4rem; font-weight: 800;">Liquor<span style="color: #f0a500;">Belle</span></div>
+        </div>
+        <div style="text-align: center; margin-bottom: 24px;">
+          <span style="display: inline-block; background: #2ecc7115; color: #2ecc71; padding: 8px 20px; border-radius: 50px;">✅ PAYMENT CONFIRMED</span>
+        </div>
+        <h2 style="color: #f0eef8;">Hello ${escapeHtml(customerName)},</h2>
+        <p style="color: #9994ad;">Your payment for order <strong style="color: #f0a500;">${orderNumber}</strong> has been confirmed!</p>
+        <div style="background: #1e1e28; border-radius: 20px; padding: 20px; margin: 20px 0;">
+          <div style="display: flex; justify-content: space-between;">
+            <div><div style="color: #6b6780;">Order Number</div><div style="color: #f0a500;">${orderNumber}</div></div>
+            <div><div style="color: #6b6780;">Total Paid</div><div style="color: #2ecc71; font-size: 20px;">KES ${total.toLocaleString()}</div></div>
+          </div>
+          <div style="border-top: 1px solid rgba(255,255,255,0.06); margin-top: 16px; padding-top: 16px;">
+            <div style="color: #6b6780;">Delivery Address</div>
+            <div>${escapeHtml(address)}</div>
+          </div>
+        </div>
+        <div style="background: rgba(46,204,113,0.08); border-radius: 20px; padding: 16px; text-align: center;">
+          <div style="font-size: 32px;">🚚</div>
+          <div style="color: #2ecc71;">Your order is being prepared for delivery!</div>
+          <div>Our rider will contact you within 45 minutes</div>
+        </div>
+        <div style="text-align: center; margin-top: 28px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.05);">
+          <p style="color: #6b6780;">LiquorBelle — Dagoretti's Finest | 24/7 Delivery | Over 18 only</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+  
+  try {
+    await axios.post('https://api.brevo.com/v3/smtp/email', {
+      sender: { name: 'LiquorBelle', email: 'timblax0@gmail.com' },
+      to: [{ email: email }],
+      subject: `✅ Payment Confirmed - Order ${orderNumber} - LiquorBelle`,
+      htmlContent: html
+    }, {
+      headers: { 'api-key': BREVO_API_KEY, 'Content-Type': 'application/json' }
+    });
+    console.log(`📧 Payment confirmation email sent to ${email}`);
+  } catch (err) {
+    console.error('❌ Payment email error:', err.response?.data || err.message);
+  }
+}
+
+// ==================== STK PUSH ENDPOINT (UNTOUCHED) ====================
 app.post('/api/stkpush',
   stkLimiter,
   body('phone').optional().isString(),
@@ -145,7 +222,7 @@ app.post('/api/stkpush',
   }
 );
 
-// ==================== M-PESA CALLBACK ====================
+// ==================== M-PESA CALLBACK (UNTOUCHED) ====================
 app.post('/api/callback', async (req, res) => {
   const callback = req.body;
   const stkCallback = callback?.Body?.stkCallback;
@@ -271,16 +348,6 @@ app.post('/api/verify-otp', (req, res) => {
 });
 
 // ==================== ORDER CONFIRMATION EMAIL ====================
-function escapeHtml(str) {
-  if (!str) return '';
-  return str.replace(/[&<>]/g, function(m) {
-    if (m === '&') return '&amp;';
-    if (m === '<') return '&lt;';
-    if (m === '>') return '&gt;';
-    return m;
-  });
-}
-
 app.post('/api/send-order-email', async (req, res) => {
   const { email, orderId, customerName, phone, items, subtotal, delivery, total, address, timestamp, paymentMethod } = req.body;
   
@@ -396,6 +463,21 @@ app.put('/api/db/orders/:id/status', async (req, res) => {
   try {
     const { status } = req.body;
     const order = await updateOrderStatus(req.params.id, status);
+    
+    if (status === 'paid') {
+      const fullOrder = await getOrderById(req.params.id);
+      if (fullOrder && fullOrder.customer_email) {
+        await sendOrderPaidEmail(
+          fullOrder.id,
+          fullOrder.customer_email,
+          fullOrder.customer_name,
+          fullOrder.order_number,
+          fullOrder.total,
+          fullOrder.address
+        );
+      }
+    }
+    
     res.json({ success: true, order });
   } catch (err) {
     console.error('Order status update error:', err);
