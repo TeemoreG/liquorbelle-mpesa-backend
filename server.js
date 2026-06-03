@@ -112,7 +112,7 @@ app.get('/api/orders/by-email/:email', async (req, res) => {
   }
 });
 
-// ==================== PROFESSIONAL EMAIL TEMPLATE ====================
+// ==================== MODERN EMAIL TEMPLATE ====================
 function generateOrderEmailHtml(orderData, isPaymentConfirmed = false) {
   const {
     orderId,
@@ -129,8 +129,8 @@ function generateOrderEmailHtml(orderData, isPaymentConfirmed = false) {
 
   const itemsRows = items.map(item => `
     <tr style="border-bottom: 1px solid #2a2a35;">
-      <td style="padding: 12px 0; color: #e0e0e0; font-size: 14px;">${escapeHtml(item.name)} <span style="color: #888; font-size: 12px;">x${item.qty}</span></td>
-      <td style="padding: 12px 0; text-align: right; color: #f0a500; font-weight: 600; font-size: 14px;">KES ${(item.price * item.qty).toLocaleString()}</td>
+      <td style="padding: 14px 0; color: #e0e0e0; font-size: 14px;">${escapeHtml(item.name)} <span style="color: #888; font-size: 12px;">x${item.qty}</span></td>
+      <td style="padding: 14px 0; text-align: right; color: #f0a500; font-weight: 700; font-size: 14px;">KES ${(item.price * item.qty).toLocaleString()}</td>
     </tr>
   `).join('');
 
@@ -138,118 +138,136 @@ function generateOrderEmailHtml(orderData, isPaymentConfirmed = false) {
   const paymentText = paymentMethod === 'mpesa' ? 'M-PESA (STK Push)' : 'Cash on Delivery';
   const formattedPhone = phone ? escapeHtml(phone) : 'Provided at checkout';
   
+  // Distinct styles based on email type
   const statusColor = isPaymentConfirmed ? '#2ecc71' : '#f0a500';
   const statusText = isPaymentConfirmed ? 'PAYMENT CONFIRMED ✓' : 'ORDER RECEIVED';
   const statusBg = isPaymentConfirmed ? 'rgba(46,204,113,0.12)' : 'rgba(240,165,0,0.12)';
+  const accentColor = isPaymentConfirmed ? '#2ecc71' : '#e03131';
+  const headerGradient = isPaymentConfirmed 
+    ? 'linear-gradient(135deg, #0d2e1a, #111118)' 
+    : 'linear-gradient(135deg, #2e1a1a, #111118)';
 
   return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Order ${orderId} - LiquorBelle</title>
+<title>${isPaymentConfirmed ? '✅ Payment Confirmed' : '📦 Order Confirmed'} - LiquorBelle</title>
 </head>
 <body style="margin: 0; padding: 0; background-color: #0a0a0f; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-  <div style="max-width: 560px; margin: 0 auto; padding: 20px;">
+  <div style="max-width: 580px; margin: 0 auto; padding: 20px;">
+    
     <!-- Main Card -->
-    <div style="background: linear-gradient(135deg, #111118 0%, #17171f 100%); border-radius: 24px; overflow: hidden; border: 1px solid #2a2a35; box-shadow: 0 8px 24px rgba(0,0,0,0.4);">
+    <div style="background: linear-gradient(135deg, #111118 0%, #17171f 100%); border-radius: 28px; overflow: hidden; border: 1px solid #2a2a35; box-shadow: 0 12px 32px rgba(0,0,0,0.5);">
       
       <!-- Header with Logo -->
-      <div style="text-align: center; padding: 32px 24px 20px; border-bottom: 1px solid #2a2a35;">
-        <img src="https://i.postimg.cc/PxwLVrdh/227a55e3-ad16-4893-9e87-03dfc202814f.png" alt="LiquorBelle" style="width: 60px; height: auto; margin-bottom: 12px;">
-        <div style="font-size: 22px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px;">Liquor<span style="color: #f0a500;">Belle</span></div>
-        <div style="font-size: 12px; color: #888; margin-top: 4px;">Dagoretti's Finest • 24/7 Delivery</div>
+      <div style="background: ${headerGradient}; text-align: center; padding: 32px 24px 24px; border-bottom: 1px solid #2a2a35;">
+        <img src="https://i.postimg.cc/PxwLVrdh/227a55e3-ad16-4893-9e87-03dfc202814f.png" alt="LiquorBelle" style="width: 65px; height: auto; margin-bottom: 12px; border-radius: 12px;">
+        <div style="font-size: 24px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px;">Liquor<span style="color: ${accentColor};">Belle</span></div>
+        <div style="font-size: 12px; color: #888; margin-top: 6px;">Dagoretti's Finest • 24/7 Delivery</div>
       </div>
       
       <!-- Status Badge -->
-      <div style="text-align: center; padding: 24px 24px 0;">
-        <span style="display: inline-block; background: ${statusBg}; color: ${statusColor}; padding: 6px 18px; border-radius: 50px; font-size: 12px; font-weight: 700; letter-spacing: 0.5px;">${statusText}</span>
+      <div style="text-align: center; padding: 28px 24px 0;">
+        <span style="display: inline-block; background: ${statusBg}; color: ${statusColor}; padding: 8px 22px; border-radius: 50px; font-size: 12px; font-weight: 800; letter-spacing: 1px; border: 1px solid ${statusColor}40;">${statusText}</span>
       </div>
       
       <!-- Greeting -->
-      <div style="padding: 20px 24px 0;">
-        <h2 style="color: #ffffff; font-size: 20px; font-weight: 600; margin: 0 0 8px;">Hello ${escapeHtml(customerName)},</h2>
-        <p style="color: #aaa; font-size: 14px; line-height: 1.5; margin: 0;">
-          ${isPaymentConfirmed ? 'Your payment has been confirmed! 🎉' : 'Thank you for your order!'} 
-          We're preparing your items for delivery.
+      <div style="padding: 24px 24px 0;">
+        <h2 style="color: #ffffff; font-size: 22px; font-weight: 700; margin: 0 0 8px;">Hello ${escapeHtml(customerName)},</h2>
+        <p style="color: #aaa; font-size: 15px; line-height: 1.5; margin: 0;">
+          ${isPaymentConfirmed ? '🎉 Your payment has been successfully confirmed! We\'re getting your order ready.' : '📋 Thank you for shopping with LiquorBelle! Your order has been received.'}
         </p>
       </div>
       
-      <!-- Order Info Card -->
-      <div style="background: #1e1e28; margin: 20px 24px; border-radius: 16px; padding: 16px;">
-        <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
-          <div>
-            <div style="color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">Order Number</div>
-            <div style="color: #f0a500; font-size: 15px; font-weight: 700;">${orderId}</div>
-          </div>
-          <div>
-            <div style="color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">Order Date</div>
-            <div style="color: #e0e0e0; font-size: 14px;">${timestamp}</div>
-          </div>
-          <div>
-            <div style="color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">Payment</div>
-            <div style="color: #e0e0e0; font-size: 14px;">${paymentText}</div>
-          </div>
+      <!-- Order Info Cards -->
+      <div style="display: flex; gap: 12px; flex-wrap: wrap; margin: 24px 24px 0;">
+        <div style="flex: 1; background: #1e1e28; border-radius: 16px; padding: 14px; min-width: 120px;">
+          <div style="color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Order Number</div>
+          <div style="color: #f0a500; font-size: 14px; font-weight: 800;">${orderId}</div>
+        </div>
+        <div style="flex: 1; background: #1e1e28; border-radius: 16px; padding: 14px; min-width: 120px;">
+          <div style="color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Order Date</div>
+          <div style="color: #e0e0e0; font-size: 13px; font-weight: 600;">${timestamp}</div>
+        </div>
+        <div style="flex: 1; background: #1e1e28; border-radius: 16px; padding: 14px; min-width: 120px;">
+          <div style="color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Payment</div>
+          <div style="color: ${accentColor}; font-size: 13px; font-weight: 700;">${paymentText}</div>
         </div>
       </div>
       
       <!-- Items Table -->
-      <div style="margin: 0 24px;">
-        <div style="background: #1e1e28; border-radius: 16px; overflow: hidden;">
-          <div style="background: #24242f; padding: 12px 16px; font-weight: 600; color: #f0a500; font-size: 13px;">Order Summary</div>
-          <table style="width: 100%; border-collapse: collapse; padding: 0 16px;">
+      <div style="margin: 24px 24px 0;">
+        <div style="background: #1e1e28; border-radius: 20px; overflow: hidden;">
+          <div style="background: #24242f; padding: 14px 20px;">
+            <span style="font-weight: 700; color: #f0a500; font-size: 14px;">🍾 Order Summary</span>
+          </div>
+          <table style="width: 100%; border-collapse: collapse; padding: 0 20px;">
             <tbody>
               ${itemsRows}
             </tbody>
           </table>
-          <div style="padding: 12px 16px; border-top: 1px solid #2a2a35;">
-            <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-              <span style="color: #aaa; font-size: 13px;">Subtotal</span>
-              <span style="color: #e0e0e0; font-size: 13px;">KES ${subtotal.toLocaleString()}</span>
+          
+          <!-- BOLD SUBTOTAL/DELIVERY SECTION - CARD STYLE -->
+          <div style="background: #252530; margin: 12px 16px 16px 16px; border-radius: 16px; padding: 4px 0;">
+            <div style="display: flex; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid #333344;">
+              <span style="color: #ccc; font-size: 15px; font-weight: 600;">Subtotal</span>
+              <span style="color: #f0a500; font-size: 16px; font-weight: 800;">KES ${subtotal.toLocaleString()}</span>
             </div>
-            <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
-              <span style="color: #aaa; font-size: 13px;">Delivery Fee</span>
-              <span style="color: #e0e0e0; font-size: 13px;">${deliveryText}</span>
+            <div style="display: flex; justify-content: space-between; padding: 14px 20px;">
+              <span style="color: #ccc; font-size: 15px; font-weight: 600;">Delivery Fee</span>
+              <span style="color: ${delivery === 0 ? '#2ecc71' : '#f0a500'}; font-size: 16px; font-weight: 800;">${deliveryText}</span>
             </div>
-            <div style="display: flex; justify-content: space-between; padding-top: 12px; border-top: 2px solid #e03131;">
-              <span style="color: #ffffff; font-size: 16px; font-weight: 700;">Total</span>
-              <span style="color: #e03131; font-size: 18px; font-weight: 800;">KES ${total.toLocaleString()}</span>
+          </div>
+          
+          <!-- TOTAL - HIGHLIGHTED -->
+          <div style="background: linear-gradient(135deg, #2a1a1a, #1a1a1a); margin: 0 16px 20px 16px; border-radius: 16px; padding: 16px 20px; border-left: 4px solid #e03131;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span style="color: #ffffff; font-size: 18px; font-weight: 800;">TOTAL</span>
+              <span style="color: #e03131; font-size: 24px; font-weight: 900;">KES ${total.toLocaleString()}</span>
             </div>
           </div>
         </div>
       </div>
       
-      <!-- Delivery Address -->
+      <!-- Delivery Address Card -->
       <div style="margin: 20px 24px;">
-        <div style="background: #1e1e28; border-radius: 16px; padding: 16px;">
-          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
-            <span style="font-size: 18px;">📍</span>
-            <span style="color: #f0a500; font-weight: 600; font-size: 12px;">DELIVERY ADDRESS</span>
+        <div style="background: #1e1e28; border-radius: 20px; padding: 18px; border: 1px solid #2a2a35;">
+          <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+            <span style="font-size: 22px;">📍</span>
+            <span style="color: #f0a500; font-weight: 800; font-size: 12px; letter-spacing: 0.5px;">DELIVERY ADDRESS</span>
           </div>
-          <div style="color: #e0e0e0; font-size: 14px; line-height: 1.4;">${escapeHtml(address)}</div>
-          <div style="color: #aaa; font-size: 12px; margin-top: 8px;">📞 Contact: ${formattedPhone}</div>
+          <div style="color: #e0e0e0; font-size: 14px; line-height: 1.5; margin-bottom: 10px;">${escapeHtml(address)}</div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 14px;">📞</span>
+            <span style="color: #aaa; font-size: 13px;">${formattedPhone}</span>
+          </div>
         </div>
       </div>
       
-      <!-- Delivery Progress -->
+      <!-- Delivery Progress Card -->
       <div style="margin: 0 24px 24px;">
-        <div style="background: rgba(46,204,113,0.05); border-radius: 16px; padding: 16px; text-align: center; border: 1px solid rgba(46,204,113,0.15);">
-          <div style="font-size: 28px; margin-bottom: 8px;">🚚</div>
-          <div style="color: #2ecc71; font-weight: 600; font-size: 14px; margin-bottom: 4px;">Delivery in Progress</div>
-          <div style="color: #aaa; font-size: 12px;">Our rider will contact you on ${formattedPhone} within 45 minutes</div>
+        <div style="background: ${isPaymentConfirmed ? 'rgba(46,204,113,0.06)' : 'rgba(240,165,0,0.06)'}; border-radius: 20px; padding: 20px; text-align: center; border: 1px solid ${accentColor}30;">
+          <div style="font-size: 36px; margin-bottom: 10px;">${isPaymentConfirmed ? '🚚✨' : '⏳📦'}</div>
+          <div style="color: ${accentColor}; font-weight: 800; font-size: 16px; margin-bottom: 6px;">${isPaymentConfirmed ? 'Order Confirmed & Processing' : 'Payment Pending Confirmation'}</div>
+          <div style="color: #aaa; font-size: 13px; line-height: 1.4;">${isPaymentConfirmed ? 'Our rider will contact you on ' + formattedPhone + ' within 45 minutes' : 'Complete your M-PESA payment to confirm this order'}</div>
         </div>
       </div>
       
-      <!-- Track Button -->
+      <!-- Action Button -->
       <div style="text-align: center; padding: 0 24px 24px;">
-        <a href="https://teemoreg.github.io/liquorbelle/track-orders.html" style="display: inline-block; background: linear-gradient(135deg, #e03131, #c0392b); color: #ffffff; text-decoration: none; padding: 12px 28px; border-radius: 50px; font-weight: 600; font-size: 14px;">🔍 Track Your Order</a>
+        <a href="https://teemoreg.github.io/liquorbelle/track-orders.html?email=${encodeURIComponent(orderData.customerEmail || '')}" style="display: inline-block; background: linear-gradient(135deg, #e03131, #c0392b); color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 60px; font-weight: 700; font-size: 15px; box-shadow: 0 4px 12px rgba(224,49,49,0.3);">🔍 Track Your Order</a>
       </div>
       
       <!-- Footer -->
-      <div style="text-align: center; padding: 20px 24px; background: #0d0d12; border-top: 1px solid #2a2a35;">
-        <p style="color: #666; font-size: 11px; margin: 0 0 8px;">LiquorBelle — Dagoretti Road, Opposite Quickmart</p>
-        <p style="color: #555; font-size: 10px; margin: 0;">📞 +254 748 894 443 | 💬 WhatsApp Available 24/7</p>
-        <p style="color: #444; font-size: 9px; margin: 12px 0 0;">⚠️ You must be over 18 to purchase alcohol. Drink responsibly.</p>
+      <div style="text-align: center; padding: 20px 24px 24px; background: #0d0d12; border-top: 1px solid #2a2a35;">
+        <div style="margin-bottom: 12px;">
+          <span style="color: #555; font-size: 11px;">📞 +254 748 894 443</span>
+          <span style="color: #444; margin: 0 8px;">•</span>
+          <span style="color: #555; font-size: 11px;">💬 WhatsApp 24/7</span>
+        </div>
+        <p style="color: #444; font-size: 10px; margin: 8px 0 0;">⚠️ You must be over 18 to purchase alcohol. Drink responsibly.</p>
+        <p style="color: #3a3a3a; font-size: 9px; margin: 12px 0 0;">LiquorBelle — Dagoretti Road, Opposite Quickmart</p>
       </div>
     </div>
   </div>
@@ -272,7 +290,8 @@ async function sendOrderPaidEmail(orderId, email, customerName, orderNumber, tot
     address,
     timestamp: timestamp || new Date().toLocaleString('en-KE', { hour12: true, hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' }),
     paymentMethod: 'mpesa',
-    phone: phone || ''
+    phone: phone || '',
+    customerEmail: email
   }, true);
   
   try {
@@ -483,14 +502,15 @@ app.post('/api/send-order-email', async (req, res) => {
     address,
     timestamp,
     paymentMethod,
-    phone
+    phone,
+    customerEmail: email
   }, false);
   
   try {
     await axios.post('https://api.brevo.com/v3/smtp/email', {
       sender: { name: 'LiquorBelle', email: 'timblax0@gmail.com' },
       to: [{ email: email }],
-      subject: `Order Confirmation ${orderId} - LiquorBelle`,
+      subject: `📦 Order Confirmation ${orderId} - LiquorBelle`,
       htmlContent: html
     }, {
       headers: { 'api-key': BREVO_API_KEY, 'Content-Type': 'application/json' }
@@ -578,7 +598,6 @@ app.put('/api/db/orders/:id/status', async (req, res) => {
     if (status === 'paid') {
       const fullOrder = await getOrderById(req.params.id);
       if (fullOrder && fullOrder.customer_email) {
-        // Parse items from JSON if needed
         let items = fullOrder.items;
         if (typeof items === 'string') {
           try { items = JSON.parse(items); } catch(e) { items = []; }
