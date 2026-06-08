@@ -4,7 +4,7 @@ const axios = require('axios');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
-const { pool, initDB, getAllProducts, updateProduct, createProduct, deleteProduct, getAllOrders, updateOrderStatus, createOrder, getDashboardStats, getOrderById } = require('./db');
+const { pool, initDB } = require('./db');
 
 // Initialize database on startup
 initDB();
@@ -129,7 +129,7 @@ function generateOrderEmailHtml(orderData, isPaymentConfirmed = false) {
 
   const itemsRows = items.map(item => `
     <tr style="border-bottom: 1px solid #2a2a35;">
-      <td style="padding: 14px 0; color: #e0e0e0; font-size: 14px;">${escapeHtml(item.name)} <span style="color: #888; font-size: 12px;">x${item.qty}</span></td>
+      <td style="padding: 14px 0; color: #e0e0e0; font-size: 14px;">${escapeHtml(item.name)} <span style="color: #888; font-size: 12px;">x${item.qty}</span> <span style="color: #666; font-size: 11px;">(${item.size || '750ml'})</span></td>
       <td style="padding: 14px 0; text-align: right; color: #f0a500; font-weight: 700; font-size: 14px;">KES ${(item.price * item.qty).toLocaleString()}</td>
     </tr>
   `).join('');
@@ -138,7 +138,6 @@ function generateOrderEmailHtml(orderData, isPaymentConfirmed = false) {
   const paymentText = paymentMethod === 'mpesa' ? 'M-PESA (STK Push)' : 'Cash on Delivery';
   const formattedPhone = phone ? escapeHtml(phone) : 'Provided at checkout';
   
-  // Distinct styles based on email type
   const statusColor = isPaymentConfirmed ? '#2ecc71' : '#f0a500';
   const statusText = isPaymentConfirmed ? 'PAYMENT CONFIRMED ✓' : 'ORDER RECEIVED';
   const statusBg = isPaymentConfirmed ? 'rgba(46,204,113,0.12)' : 'rgba(240,165,0,0.12)';
@@ -206,7 +205,7 @@ function generateOrderEmailHtml(orderData, isPaymentConfirmed = false) {
             <tbody>
               ${itemsRows}
             </tbody>
-          </table>
+           </table>
           
           <!-- BOLD SUBTOTAL/DELIVERY SECTION - CARD STYLE -->
           <div style="background: #252530; margin: 12px 16px 16px 16px; border-radius: 16px; padding: 4px 0;">
@@ -524,11 +523,22 @@ app.post('/api/send-order-email', async (req, res) => {
   }
 });
 
-// ==================== DATABASE API ENDPOINTS ====================
+// ==================== DATABASE API ENDPOINTS WITH VARIANTS SUPPORT ====================
 
+// Get all products (returns variants as JSON)
 app.get('/api/db/products', async (req, res) => {
   try {
-    const products = await getAllProducts();
+    const result = await pool.query(`
+      SELECT id, name, category, badge, image, description, variants, created_at, updated_at
+      FROM products 
+      ORDER BY created_at DESC
+    `);
+    
+    const products = result.rows.map(p => ({
+      ...p,
+      variants: p.variants || [{ size: '750ml', price: 0, discount: 0 }]
+    }));
+    
     res.json({ success: true, products });
   } catch (err) {
     console.error('Products fetch error:', err);
@@ -536,29 +546,75 @@ app.get('/api/db/products', async (req, res) => {
   }
 });
 
+// Create product with variants
 app.post('/api/db/products', async (req, res) => {
   try {
-    const product = await createProduct(req.body);
-    res.json({ success: true, product });
+    const { name, category, badge, image, description, variants } = req.body;
+    
+    if (!name || !variants || variants.length === 0) {
+      return res.status(400).json({ success: false, message: 'Name and at least one variant required' });
+    }
+    
+    // Validate each variant has required fields
+    for (const v of variants) {
+      if (!v.size || !v.price) {
+        return res.status(400).json({ success: false, message: 'Each variant must have size and price' });
+      }
+    }
+    
+    const result = await pool.query(`
+      INSERT INTO products (name, category, badge, image, description, variants)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING *
+    `, [name, category, badge, image, description, JSON.stringify(variants)]);
+    
+    res.json({ success: true, product: result.rows[0] });
   } catch (err) {
     console.error('Product create error:', err);
     res.status(500).json({ success: false, message: 'Failed to create product' });
   }
 });
 
+// Update product with variants
 app.put('/api/db/products/:id', async (req, res) => {
   try {
-    const product = await updateProduct(req.params.id, req.body);
-    res.json({ success: true, product });
+    const { id } = req.params;
+    const { name, category, badge, image, description, variants } = req.body;
+    
+    if (!name || !variants || variants.length === 0) {
+      return res.status(400).json({ success: false, message: 'Name and at least one variant required' });
+    }
+    
+    // Validate each variant
+    for (const v of variants) {
+      if (!v.size || !v.price) {
+        return res.status(400).json({ success: false, message: 'Each variant must have size and price' });
+      }
+    }
+    
+    const result = await pool.query(`
+      UPDATE products 
+      SET name = $1, category = $2, badge = $3, image = $4, description = $5, variants = $6, updated_at = NOW()
+      WHERE id = $7
+      RETURNING *
+    `, [name, category, badge, image, description, JSON.stringify(variants), id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+    
+    res.json({ success: true, product: result.rows[0] });
   } catch (err) {
     console.error('Product update error:', err);
     res.status(500).json({ success: false, message: 'Failed to update product' });
   }
 });
 
+// Delete product
 app.delete('/api/db/products/:id', async (req, res) => {
   try {
-    await deleteProduct(req.params.id);
+    const { id } = req.params;
+    await pool.query('DELETE FROM products WHERE id = $1', [id]);
     res.json({ success: true });
   } catch (err) {
     console.error('Product delete error:', err);
@@ -566,70 +622,172 @@ app.delete('/api/db/products/:id', async (req, res) => {
   }
 });
 
+// ==================== ORDERS API ====================
+
+// Get all orders
 app.get('/api/db/orders', async (req, res) => {
   try {
-    const orders = await getAllOrders();
-    res.json({ success: true, orders });
+    const result = await pool.query(`
+      SELECT o.*, 
+        COALESCE(
+          (SELECT json_agg(row_to_json(oi)) FROM order_items oi WHERE oi.order_id = o.id),
+          '[]'::json
+        ) as items
+      FROM orders o
+      ORDER BY o.created_at DESC
+    `);
+    res.json({ success: true, orders: result.rows });
   } catch (err) {
     console.error('Orders fetch error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch orders' });
   }
 });
 
-app.post('/api/db/orders', async (req, res) => {
+// Get order by ID
+app.get('/api/db/orders/:id', async (req, res) => {
   try {
-    const { orderNumber, userId, customerName, customerEmail, phone, address, notes, subtotal, delivery, total, paymentMethod, status, items } = req.body;
-    const order = await createOrder({
-      orderNumber, userId, customerName, customerEmail, phone, address, notes,
-      subtotal, delivery, total, paymentMethod, status
-    }, items);
-    res.json({ success: true, order });
+    const { id } = req.params;
+    const result = await pool.query(`
+      SELECT o.*, 
+        COALESCE(
+          (SELECT json_agg(row_to_json(oi)) FROM order_items oi WHERE oi.order_id = o.id),
+          '[]'::json
+        ) as items
+      FROM orders o
+      WHERE o.id = $1
+    `, [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    
+    res.json({ success: true, order: result.rows[0] });
   } catch (err) {
-    console.error('Create order error:', err);
-    res.status(500).json({ success: false, message: 'Failed to create order' });
+    console.error('Order fetch error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch order' });
   }
 });
 
-app.put('/api/db/orders/:id/status', async (req, res) => {
+// Create order
+app.post('/api/db/orders', async (req, res) => {
+  const client = await pool.connect();
   try {
-    const { status } = req.body;
-    const order = await updateOrderStatus(req.params.id, status);
+    await client.query('BEGIN');
     
-    if (status === 'paid') {
-      const fullOrder = await getOrderById(req.params.id);
-      if (fullOrder && fullOrder.customer_email) {
-        let items = fullOrder.items;
-        if (typeof items === 'string') {
-          try { items = JSON.parse(items); } catch(e) { items = []; }
-        }
-        
-        await sendOrderPaidEmail(
-          fullOrder.id,
-          fullOrder.customer_email,
-          fullOrder.customer_name,
-          fullOrder.order_number,
-          fullOrder.total,
-          fullOrder.address,
-          items,
-          fullOrder.subtotal,
-          fullOrder.delivery,
-          fullOrder.phone,
-          fullOrder.created_at
-        );
-      }
+    const { 
+      orderNumber, userId, customerName, customerEmail, phone, address, 
+      notes, subtotal, delivery, total, paymentMethod, status, items 
+    } = req.body;
+    
+    // Insert order
+    const orderResult = await client.query(`
+      INSERT INTO orders (order_number, user_id, customer_name, customer_email, phone, address, notes, subtotal, delivery, total, payment_method, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      RETURNING *
+    `, [orderNumber, userId, customerName, customerEmail, phone, address, notes, subtotal, delivery, total, paymentMethod, status || 'pending']);
+    
+    const order = orderResult.rows[0];
+    
+    // Insert order items
+    for (const item of items) {
+      await client.query(`
+        INSERT INTO order_items (order_id, product_id, product_name, size, quantity, price)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `, [order.id, item.product_id, item.name, item.size || '750ml', item.qty, item.price]);
     }
     
+    await client.query('COMMIT');
+    
     res.json({ success: true, order });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Create order error:', err);
+    res.status(500).json({ success: false, message: 'Failed to create order' });
+  } finally {
+    client.release();
+  }
+});
+
+// Update order status
+app.put('/api/db/orders/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    
+    const result = await pool.query(`
+      UPDATE orders 
+      SET status = $1, updated_at = NOW()
+      WHERE id = $2
+      RETURNING *
+    `, [status, id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    
+    // If status changed to paid, send confirmation email
+    if (status === 'paid') {
+      const order = result.rows[0];
+      const itemsResult = await pool.query(`
+        SELECT * FROM order_items WHERE order_id = $1
+      `, [id]);
+      
+      await sendOrderPaidEmail(
+        order.id,
+        order.customer_email,
+        order.customer_name,
+        order.order_number,
+        order.total,
+        order.address,
+        itemsResult.rows,
+        order.subtotal,
+        order.delivery,
+        order.phone,
+        order.created_at
+      );
+    }
+    
+    res.json({ success: true, order: result.rows[0] });
   } catch (err) {
     console.error('Order status update error:', err);
     res.status(500).json({ success: false, message: 'Failed to update order status' });
   }
 });
 
+// Delete order
+app.delete('/api/db/orders/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM order_items WHERE order_id = $1', [id]);
+    await pool.query('DELETE FROM orders WHERE id = $1', [id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Order delete error:', err);
+    res.status(500).json({ success: false, message: 'Failed to delete order' });
+  }
+});
+
+// ==================== DASHBOARD STATS ====================
 app.get('/api/db/stats', async (req, res) => {
   try {
-    const stats = await getDashboardStats();
-    res.json({ success: true, stats });
+    const ordersResult = await pool.query('SELECT COUNT(*) as count FROM orders');
+    const productsResult = await pool.query('SELECT COUNT(*) as count FROM products');
+    const revenueResult = await pool.query('SELECT COALESCE(SUM(total), 0) as total FROM orders WHERE status = $1', ['delivered']);
+    const pendingResult = await pool.query('SELECT COUNT(*) as count FROM orders WHERE status = $1', ['pending']);
+    const paidResult = await pool.query('SELECT COUNT(*) as count FROM orders WHERE status = $1', ['paid']);
+    const deliveredResult = await pool.query('SELECT COUNT(*) as count FROM orders WHERE status = $1', ['delivered']);
+    
+    res.json({ 
+      success: true, 
+      stats: {
+        totalOrders: parseInt(ordersResult.rows[0].count),
+        totalProducts: parseInt(productsResult.rows[0].count),
+        totalRevenue: parseInt(revenueResult.rows[0].total),
+        pendingOrders: parseInt(pendingResult.rows[0].count),
+        paidOrders: parseInt(paidResult.rows[0].count),
+        deliveredOrders: parseInt(deliveredResult.rows[0].count)
+      }
+    });
   } catch (err) {
     console.error('Stats fetch error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch stats' });
@@ -662,14 +820,6 @@ app.post('/api/admin/delivery-settings', async (req, res) => {
     const { delivery_fee, free_delivery_threshold, delivery_enabled } = req.body;
     
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS settings (
-        key VARCHAR(50) PRIMARY KEY,
-        value JSONB NOT NULL,
-        updated_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
-    
-    await pool.query(`
       INSERT INTO settings (key, value) 
       VALUES ('delivery', $1) 
       ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()
@@ -682,12 +832,71 @@ app.post('/api/admin/delivery-settings', async (req, res) => {
   }
 });
 
+// ==================== MIGRATION: UPDATE PRODUCTS TABLE ====================
+app.post('/api/admin/migrate-products', async (req, res) => {
+  try {
+    // First, check if variants column exists, if not add it
+    const checkColumn = await pool.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'products' AND column_name = 'variants'
+    `);
+    
+    if (checkColumn.rows.length === 0) {
+      await pool.query(`
+        ALTER TABLE products ADD COLUMN variants JSONB DEFAULT '[{"size":"750ml","price":0,"discount":0}]'
+      `);
+      console.log('✅ Added variants column to products table');
+    }
+    
+    // Also add size column to order_items if not exists
+    const checkSizeColumn = await pool.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'order_items' AND column_name = 'size'
+    `);
+    
+    if (checkSizeColumn.rows.length === 0) {
+      await pool.query(`
+        ALTER TABLE order_items ADD COLUMN size VARCHAR(10) DEFAULT '750ml'
+      `);
+      console.log('✅ Added size column to order_items table');
+    }
+    
+    // Migrate existing products to variants format if they have price column
+    const existingProducts = await pool.query(`
+      SELECT id, name, category, badge, image, description, price, discount_percent 
+      FROM products 
+      WHERE variants IS NULL OR variants = '[]'::jsonb
+    `);
+    
+    for (const p of existingProducts.rows) {
+      const variants = [{ 
+        size: '750ml', 
+        price: p.price || 0, 
+        discount: p.discount_percent || 0 
+      }];
+      
+      await pool.query(`
+        UPDATE products 
+        SET variants = $1, price = NULL, discount_percent = NULL
+        WHERE id = $2
+      `, [JSON.stringify(variants), p.id]);
+    }
+    
+    res.json({ success: true, message: 'Migration completed successfully' });
+  } catch (err) {
+    console.error('Migration error:', err);
+    res.status(500).json({ success: false, message: 'Migration failed: ' + err.message });
+  }
+});
+
 // ==================== HEALTH CHECK ====================
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     brevoConfigured: !!BREVO_API_KEY,
-    message: 'LiquorBelle API is running',
+    message: 'LiquorBelle API is running with variants support',
     uptime: process.uptime(),
     timestamp: new Date().toISOString()
   });
@@ -701,10 +910,24 @@ app.use((err, req, res, next) => {
 
 // ==================== START SERVER ====================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📧 Brevo API Key: ${BREVO_API_KEY ? '✅ Configured' : '❌ Missing'}`);
   console.log(`💳 M-PESA: ${CONSUMER_KEY ? '✅ Configured' : '❌ Missing'}`);
   console.log(`🔒 Rate Limiting: ✅ Active`);
   console.log(`🗄️ Database: ${process.env.DATABASE_URL ? '✅ Connected' : '❌ Missing'}`);
+  
+  // Run migration on startup
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS settings (
+        key VARCHAR(50) PRIMARY KEY,
+        value JSONB NOT NULL,
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    console.log('✅ Settings table ready');
+  } catch (err) {
+    console.error('Settings table error:', err.message);
+  }
 });

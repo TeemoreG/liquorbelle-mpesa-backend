@@ -5,11 +5,11 @@ const bcrypt = require('bcrypt');
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 5,                    // Reduced from 10
-  idleTimeoutMillis: 5000,   // Reduced from 10000
-  connectionTimeoutMillis: 3000,  // Reduced from 5000
-  statement_timeout: 5000,    // ADDED - kills slow queries
-  query_timeout: 5000,        // ADDED - kills slow queries
+  max: 5,
+  idleTimeoutMillis: 5000,
+  connectionTimeoutMillis: 3000,
+  statement_timeout: 5000,
+  query_timeout: 5000,
 });
 
 // Initialize database tables
@@ -35,29 +35,27 @@ async function initDB() {
       );
     `);
 
-    // Create products table
+    // Create products table with VARIANTS (no price, stock, capacity columns)
     await client.query(`
       CREATE TABLE IF NOT EXISTS products (
         id SERIAL PRIMARY KEY,
         name VARCHAR(200) NOT NULL,
-        capacity VARCHAR(20),
-        price INTEGER NOT NULL,
         category VARCHAR(50),
         badge VARCHAR(50),
         image TEXT,
-        stock INTEGER,
-        featured BOOLEAN DEFAULT FALSE,
+        description TEXT,
+        variants JSONB NOT NULL DEFAULT '[{"size":"750ml","price":0,"discount":0}]',
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );
     `);
 
-    // Add capacity column if missing
+    // Add description column if missing (for existing tables)
     await client.query(`
       DO $$
       BEGIN
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='products' AND column_name='capacity') THEN
-          ALTER TABLE products ADD COLUMN capacity VARCHAR(20);
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='products' AND column_name='description') THEN
+          ALTER TABLE products ADD COLUMN description TEXT;
         END IF;
       END $$;
     `);
@@ -83,13 +81,14 @@ async function initDB() {
       );
     `);
 
-    // Create order_items table
+    // Create order_items table with size column
     await client.query(`
       CREATE TABLE IF NOT EXISTS order_items (
         id SERIAL PRIMARY KEY,
         order_id UUID REFERENCES orders(id) ON DELETE CASCADE,
-        product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+        product_id INTEGER,
         product_name VARCHAR(200) NOT NULL,
+        size VARCHAR(10) DEFAULT '750ml',
         quantity INTEGER NOT NULL,
         price INTEGER NOT NULL,
         created_at TIMESTAMP DEFAULT NOW()
@@ -107,13 +106,21 @@ async function initDB() {
       );
     `);
 
+    // Create settings table for delivery settings
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS settings (
+        key VARCHAR(50) PRIMARY KEY,
+        value JSONB NOT NULL,
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
     // Create indexes
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);`);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_products_price ON products(price);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_orders_customer_email ON orders(customer_email);`);
 
@@ -128,39 +135,80 @@ async function initDB() {
       console.log('✅ Admin user created');
     }
 
-    // Check if products table is empty before seeding
+    // Migrate existing products to variants format if needed
+    const hasOldColumns = await client.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'products' AND column_name = 'price'
+    `);
+    
+    if (hasOldColumns.rows.length > 0) {
+      console.log('🔄 Migrating existing products to variants format...');
+      
+      // Get products that still have price column and no variants
+      const oldProducts = await client.query(`
+        SELECT id, name, capacity, price, category, badge, image, stock 
+        FROM products 
+        WHERE variants IS NULL OR variants = '[]'::jsonb
+      `);
+      
+      for (const p of oldProducts.rows) {
+        const variants = [{
+          size: p.capacity || '750ml',
+          price: p.price || 0,
+          discount: 0
+        }];
+        
+        await client.query(`
+          UPDATE products 
+          SET variants = $1, 
+              description = COALESCE(description, 'Premium quality spirits from official distributors'),
+              updated_at = NOW()
+          WHERE id = $2
+        `, [JSON.stringify(variants), p.id]);
+      }
+      
+      // Drop old columns after migration
+      try {
+        await client.query(`ALTER TABLE products DROP COLUMN IF EXISTS price`);
+        await client.query(`ALTER TABLE products DROP COLUMN IF EXISTS capacity`);
+        await client.query(`ALTER TABLE products DROP COLUMN IF EXISTS stock`);
+        console.log('✅ Migrated products to variants format, removed old columns');
+      } catch (err) {
+        console.log('Note: Could not drop columns, but migration completed');
+      }
+    }
+
+    // Check if products table is empty before seeding with new format
     const productCount = await client.query(`SELECT COUNT(*) FROM products`);
     if (parseInt(productCount.rows[0].count) === 0) {
       await client.query(`
-        INSERT INTO products (name, capacity, price, category, badge, image, stock) VALUES
-        ('Johnnie Walker Black Label', '750ml', 3500, 'whisky', 'hot', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
-        ('Jameson Irish Whiskey', '750ml', 3200, 'whisky', NULL, 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
-        ('Jack Daniels Old No.7', '750ml', 3800, 'whisky', 'hot', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
-        ('Chivas Regal 12', '750ml', 4200, 'whisky', 'prem', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
-        ('Ballantine''s Finest', '750ml', 2800, 'whisky', NULL, 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
-        ('Hennessy VS', '750ml', 5500, 'cognac', 'prem', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
-        ('Rémy Martin VSOP', '750ml', 6800, 'cognac', 'prem', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
-        ('Martell VS', '750ml', 5200, 'cognac', NULL, 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
-        ('Smirnoff Red', '750ml', 1800, 'vodka', NULL, 'https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop', 1),
-        ('Absolut Vodka', '750ml', 2200, 'vodka', NULL, 'https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop', 1),
-        ('Ciroc Vodka', '750ml', 3500, 'vodka', 'prem', 'https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop', 1),
-        ('Gilbeys Gin', '750ml', 1400, 'gin', 'local', 'https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop', 1),
-        ('Bombay Sapphire', '750ml', 2900, 'gin', NULL, 'https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop', 1),
-        ('Kenya Cane', '750ml', 950, 'rum', 'local', 'https://images.unsplash.com/photo-1565277408825-5da2b2a4b1dd?w=300&h=300&fit=crop', 1),
-        ('Captain Morgan', '750ml', 2100, 'rum', NULL, 'https://images.unsplash.com/photo-1565277408825-5da2b2a4b1dd?w=300&h=300&fit=crop', 1),
-        ('Nederburg Rosé', '750ml', 1500, 'wine', NULL, 'https://images.unsplash.com/photo-1506377247377-2a5b3b417ebb?w=300&h=300&fit=crop', 1),
-        ('Jacobs Creek Moscato', '750ml', 1300, 'wine', NULL, 'https://images.unsplash.com/photo-1506377247377-2a5b3b417ebb?w=300&h=300&fit=crop', 1),
-        ('Tusker Lager', '500ml', 230, 'beer', 'local', 'https://images.unsplash.com/photo-1561758033-d89a9ad46330?w=300&h=300&fit=crop', 1),
-        ('Guinness Stout', '500ml', 350, 'beer', NULL, 'https://images.unsplash.com/photo-1561758033-d89a9ad46330?w=300&h=300&fit=crop', 1),
-        ('Moet & Chandon Brut', '750ml', 9500, 'champagne', 'prem', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1),
-        ('Kingfisher Whisky', '750ml', 1800, 'kenyan', 'local', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 1);
+        INSERT INTO products (name, category, badge, image, description, variants) VALUES
+        ('Johnnie Walker Black Label', 'whisky', 'hot', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 'Smooth, complex, and rich with notes of vanilla and honey.', '[{"size":"750ml","price":3500,"discount":0}]'),
+        ('Jameson Irish Whiskey', 'whisky', NULL, 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 'Smooth triple-distilled Irish whiskey with hints of sherry and vanilla.', '[{"size":"750ml","price":3200,"discount":0}]'),
+        ('Jack Daniels Old No.7', 'whisky', 'hot', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 'Classic Tennessee whiskey with charcoal mellowing.', '[{"size":"750ml","price":3800,"discount":0}]'),
+        ('Chivas Regal 12', 'whisky', 'prem', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 'Deluxe blended Scotch whisky with rich honey and pear notes.', '[{"size":"750ml","price":4200,"discount":0}]'),
+        ('Hennessy VS', 'cognac', 'prem', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 'World-renowned cognac with fruity and spicy notes.', '[{"size":"750ml","price":5500,"discount":0}]'),
+        ('Remy Martin VSOP', 'cognac', 'prem', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 'Aged cognac with elegant floral and fruity aromas.', '[{"size":"750ml","price":6800,"discount":0}]'),
+        ('Smirnoff Red', 'vodka', NULL, 'https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop', 'World\'s best-selling vodka, triple distilled for exceptional smoothness.', '[{"size":"750ml","price":1800,"discount":0}]'),
+        ('Absolut Vodka', 'vodka', NULL, 'https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop', 'Premium Swedish vodka with rich grain character.', '[{"size":"750ml","price":2200,"discount":0}]'),
+        ('Gilbeys Gin', 'gin', 'local', 'https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop', 'Classic London dry gin, locally bottled in Kenya.', '[{"size":"750ml","price":1400,"discount":0}]'),
+        ('Bombay Sapphire', 'gin', NULL, 'https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop', 'Premium gin infused with 10 botanicals for a crisp taste.', '[{"size":"750ml","price":2900,"discount":0}]'),
+        ('Kenya Cane', 'rum', 'local', 'https://images.unsplash.com/photo-1565277408825-5da2b2a4b1dd?w=300&h=300&fit=crop', 'Locally produced sugarcane rum, a Kenyan favorite.', '[{"size":"750ml","price":950,"discount":0}]'),
+        ('Captain Morgan', 'rum', NULL, 'https://images.unsplash.com/photo-1565277408825-5da2b2a4b1dd?w=300&h=300&fit=crop', 'Spiced rum with notes of vanilla and caramel.', '[{"size":"750ml","price":2100,"discount":0}]'),
+        ('Nederburg Rosé', 'wine', NULL, 'https://images.unsplash.com/photo-1506377247377-2a5b3b417ebb?w=300&h=300&fit=crop', 'Crisp South African rosé with berry notes.', '[{"size":"750ml","price":1500,"discount":0}]'),
+        ('Jacobs Creek Moscato', 'wine', NULL, 'https://images.unsplash.com/photo-1506377247377-2a5b3b417ebb?w=300&h=300&fit=crop', 'Sweet and fruity Australian moscato.', '[{"size":"750ml","price":1300,"discount":0}]'),
+        ('Tusker Lager', 'beer', 'local', 'https://images.unsplash.com/photo-1561758033-d89a9ad46330?w=300&h=300&fit=crop', 'Kenya\'s favorite premium lager.', '[{"size":"500ml","price":230,"discount":0}]'),
+        ('Guinness Stout', 'beer', NULL, 'https://images.unsplash.com/photo-1561758033-d89a9ad46330?w=300&h=300&fit=crop', 'Rich dark Irish stout.', '[{"size":"500ml","price":350,"discount":0}]'),
+        ('Moet & Chandon Brut', 'champagne', 'prem', 'https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop', 'Iconic French champagne for celebrations.', '[{"size":"750ml","price":9500,"discount":0}]'),
+        ('Chrome Gin', 'gin', 'local', 'https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop', 'Premium Kenyan gin with unique botanical blend.', '[{"size":"250ml","price":600,"discount":0},{"size":"500ml","price":1100,"discount":0},{"size":"750ml","price":1650,"discount":0},{"size":"1L","price":2200,"discount":0}]');
       `);
-      console.log('✅ Seeded 20 products to database');
+      console.log('✅ Seeded products with variants to database');
     } else {
       console.log(`✅ Products table already has ${productCount.rows[0].count} products, skipping seed`);
     }
 
-    console.log('✅ Database initialized successfully');
+    console.log('✅ Database initialized successfully with variants support');
   } catch (err) {
     console.error('❌ Database initialization error:', err);
   } finally {
@@ -228,17 +276,10 @@ async function createOrder(orderData, items) {
     
     for (const item of items) {
       await client.query(
-        `INSERT INTO order_items (order_id, product_id, product_name, quantity, price)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [order.id, item.productId, item.name, item.quantity, item.price]
+        `INSERT INTO order_items (order_id, product_id, product_name, size, quantity, price)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [order.id, item.productId, item.name, item.size || '750ml', item.quantity, item.price]
       );
-      
-      if (item.productId) {
-        await client.query(
-          `UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock IS NOT NULL`,
-          [item.quantity, item.productId]
-        );
-      }
     }
     
     if (orderData.userId) {
@@ -321,9 +362,8 @@ async function getOrderById(orderId) {
   return result.rows[0];
 }
 
-// ==================== PRODUCT FUNCTIONS ====================
+// ==================== PRODUCT FUNCTIONS WITH VARIANTS ====================
 async function getAllProducts() {
-  // Added LIMIT to prevent timeout on large datasets
   const result = await pool.query(`SELECT * FROM products ORDER BY id LIMIT 200`);
   return result.rows;
 }
@@ -331,17 +371,16 @@ async function getAllProducts() {
 async function updateProduct(productId, productData) {
   const result = await pool.query(
     `UPDATE products 
-     SET name = $1, capacity = $2, price = $3, category = $4, badge = $5, image = $6, stock = $7, updated_at = NOW()
-     WHERE id = $8
+     SET name = $1, category = $2, badge = $3, image = $4, description = $5, variants = $6, updated_at = NOW()
+     WHERE id = $7
      RETURNING *`,
     [
       productData.name,
-      productData.capacity,
-      productData.price,
       productData.category,
       productData.badge,
       productData.image,
-      productData.stock,
+      productData.description,
+      JSON.stringify(productData.variants || []),
       productId
     ]
   );
@@ -350,17 +389,16 @@ async function updateProduct(productId, productData) {
 
 async function createProduct(productData) {
   const result = await pool.query(
-    `INSERT INTO products (name, capacity, price, category, badge, image, stock, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+    `INSERT INTO products (name, category, badge, image, description, variants, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, NOW())
      RETURNING *`,
     [
       productData.name,
-      productData.capacity,
-      productData.price,
       productData.category,
       productData.badge,
       productData.image,
-      productData.stock
+      productData.description,
+      JSON.stringify(productData.variants || [])
     ]
   );
   return result.rows[0];
@@ -384,6 +422,23 @@ async function getDashboardStats() {
   return stats.rows[0];
 }
 
+// ==================== DELIVERY SETTINGS FUNCTIONS ====================
+async function getDeliverySettings() {
+  const result = await pool.query(`SELECT value FROM settings WHERE key = 'delivery'`);
+  if (result.rows.length === 0) {
+    return { delivery_fee: 150, free_delivery_threshold: 3000, delivery_enabled: true };
+  }
+  return result.rows[0].value;
+}
+
+async function saveDeliverySettings(settings) {
+  await pool.query(`
+    INSERT INTO settings (key, value) 
+    VALUES ('delivery', $1) 
+    ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()
+  `, [JSON.stringify(settings), JSON.stringify(settings)]);
+}
+
 module.exports = {
   pool,
   initDB,
@@ -401,5 +456,7 @@ module.exports = {
   updateProduct,
   createProduct,
   deleteProduct,
-  getDashboardStats
+  getDashboardStats,
+  getDeliverySettings,
+  saveDeliverySettings
 };
