@@ -4,10 +4,7 @@ const axios = require('axios');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
-const { pool, initDB } = require('./db');
-
-// Initialize database on startup
-initDB();
+const { MongoClient, ObjectId } = require('mongodb');
 
 const app = express();
 app.use(cors());
@@ -41,6 +38,171 @@ const stkLimiter = rateLimit({
 app.use('/api/', generalLimiter);
 app.use('/api/send-email-otp', otpLimiter);
 app.use('/api/stkpush', stkLimiter);
+
+// ==================== MONGODB CONNECTION ====================
+const MONGODB_URI = process.env.MONGODB_URI;
+let db;
+let client;
+
+async function connectDB() {
+  try {
+    client = new MongoClient(MONGODB_URI);
+    await client.connect();
+    db = client.db('liquorbelle');
+    console.log('✅ MongoDB connected');
+    
+    // Create indexes
+    await db.collection('products').createIndex({ name: 1 });
+    await db.collection('orders').createIndex({ customer_email: 1 });
+    await db.collection('settings').createIndex({ key: 1 });
+    
+    // Check if products exist - if not, seed with initial products
+    const productCount = await db.collection('products').countDocuments();
+    if (productCount === 0) {
+      console.log('📦 No products found. Seeding initial products...');
+      await db.collection('products').insertMany([
+        { 
+          name: "Chrome Gin", 
+          category: "gin", 
+          badge: "local", 
+          image: "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop", 
+          description: "Premium Kenyan gin with unique botanical blend", 
+          variants: [
+            { size: "250ml", price: 600, discount: 0 },
+            { size: "500ml", price: 1100, discount: 0 },
+            { size: "750ml", price: 1650, discount: 0 },
+            { size: "1L", price: 2200, discount: 0 }
+          ], 
+          created_at: new Date() 
+        },
+        { 
+          name: "Konyagi", 
+          category: "brandy", 
+          badge: "local", 
+          image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", 
+          description: "Tanzania's finest premium spirit", 
+          variants: [
+            { size: "250ml", price: 250, discount: 0 },
+            { size: "500ml", price: 450, discount: 0 },
+            { size: "750ml", price: 700, discount: 0 },
+            { size: "1L", price: 950, discount: 0 }
+          ], 
+          created_at: new Date() 
+        },
+        { 
+          name: "Johnnie Walker Black Label", 
+          category: "whisky", 
+          badge: "hot", 
+          image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", 
+          description: "Smooth, complex, and rich with notes of vanilla and honey", 
+          variants: [
+            { size: "750ml", price: 3500, discount: 0 },
+            { size: "1L", price: 4500, discount: 0 }
+          ], 
+          created_at: new Date() 
+        },
+        { 
+          name: "Jameson Irish Whiskey", 
+          category: "whisky", 
+          badge: "", 
+          image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", 
+          description: "Smooth triple-distilled Irish whiskey", 
+          variants: [
+            { size: "750ml", price: 3200, discount: 0 },
+            { size: "1L", price: 4200, discount: 0 }
+          ], 
+          created_at: new Date() 
+        },
+        { 
+          name: "Hennessy VS", 
+          category: "cognac", 
+          badge: "prem", 
+          image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", 
+          description: "World-renowned cognac with fruity and spicy notes", 
+          variants: [
+            { size: "750ml", price: 5500, discount: 0 },
+            { size: "1L", price: 7200, discount: 0 }
+          ], 
+          created_at: new Date() 
+        },
+        { 
+          name: "Smirnoff Red Vodka", 
+          category: "vodka", 
+          badge: "", 
+          image: "https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop", 
+          description: "World's best-selling vodka, triple distilled", 
+          variants: [
+            { size: "250ml", price: 550, discount: 0 },
+            { size: "500ml", price: 800, discount: 0 },
+            { size: "750ml", price: 1100, discount: 0 },
+            { size: "1L", price: 1500, discount: 0 }
+          ], 
+          created_at: new Date() 
+        },
+        { 
+          name: "Gilbeys Gin", 
+          category: "gin", 
+          badge: "local", 
+          image: "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop", 
+          description: "Classic London dry gin, locally bottled", 
+          variants: [
+            { size: "250ml", price: 700, discount: 0 },
+            { size: "500ml", price: 1050, discount: 0 },
+            { size: "750ml", price: 1400, discount: 0 },
+            { size: "1L", price: 1900, discount: 0 }
+          ], 
+          created_at: new Date() 
+        },
+        { 
+          name: "Absolut Vodka", 
+          category: "vodka", 
+          badge: "", 
+          image: "https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop", 
+          description: "Premium Swedish vodka with rich grain character", 
+          variants: [
+            { size: "750ml", price: 1800, discount: 0 },
+            { size: "1L", price: 2400, discount: 0 }
+          ], 
+          created_at: new Date() 
+        },
+        { 
+          name: "Kenya Cane Ginger", 
+          category: "rum", 
+          badge: "local", 
+          image: "https://images.unsplash.com/photo-1565277408825-5da2b2a4b1dd?w=300&h=300&fit=crop", 
+          description: "Locally produced sugarcane rum with ginger", 
+          variants: [
+            { size: "250ml", price: 500, discount: 0 },
+            { size: "500ml", price: 850, discount: 0 },
+            { size: "750ml", price: 1200, discount: 0 },
+            { size: "1L", price: 1600, discount: 0 }
+          ], 
+          created_at: new Date() 
+        },
+        { 
+          name: "Tusker Lager", 
+          category: "beer", 
+          badge: "local", 
+          image: "https://images.unsplash.com/photo-1561758033-d89a9ad46330?w=300&h=300&fit=crop", 
+          description: "Kenya's favorite premium lager", 
+          variants: [
+            { size: "500ml", price: 230, discount: 0 },
+            { size: "12pack", price: 2500, discount: 0 }
+          ], 
+          created_at: new Date() 
+        }
+      ]);
+      console.log('✅ 10 products seeded with multiple size variants');
+    } else {
+      console.log(`✅ Products already exist (${productCount} products), skipping seed`);
+    }
+    
+    console.log('✅ Database ready');
+  } catch (err) {
+    console.error('MongoDB connection error:', err);
+    setTimeout(connectDB, 5000);
+  }
+}
 
 // ==================== SAFARICOM DARAJA CREDENTIALS ====================
 const CONSUMER_KEY = process.env.CONSUMER_KEY || 'YOUR_CONSUMER_KEY';
@@ -93,19 +255,8 @@ app.get('/api/orders/by-email/:email', async (req, res) => {
       return res.json({ success: false, message: 'Email required' });
     }
     
-    const result = await pool.query(
-      `SELECT o.*, 
-        COALESCE(
-          (SELECT json_agg(row_to_json(oi)) FROM order_items oi WHERE oi.order_id = o.id),
-          '[]'::json
-        ) as items
-       FROM orders o
-       WHERE o.customer_email ILIKE $1
-       ORDER BY o.created_at DESC`,
-      [email]
-    );
-    
-    res.json({ success: true, orders: result.rows });
+    const orders = await db.collection('orders').find({ customer_email: email }).sort({ created_at: -1 }).toArray();
+    res.json({ success: true, orders });
   } catch (err) {
     console.error('Email order lookup error:', err);
     res.status(500).json({ success: false, message: err.message });
@@ -146,132 +297,34 @@ function generateOrderEmailHtml(orderData, isPaymentConfirmed = false) {
     ? 'linear-gradient(135deg, #0d2e1a, #111118)' 
     : 'linear-gradient(135deg, #2e1a1a, #111118)';
 
-  return `<!DOCTYPE html>
+  const fullHtml = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${isPaymentConfirmed ? '✅ Payment Confirmed' : '📦 Order Confirmed'} - LiquorBelle</title>
 </head>
-<body style="margin: 0; padding: 0; background-color: #0a0a0f; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-  <div style="max-width: 580px; margin: 0 auto; padding: 20px;">
-    
-    <!-- Main Card -->
-    <div style="background: linear-gradient(135deg, #111118 0%, #17171f 100%); border-radius: 28px; overflow: hidden; border: 1px solid #2a2a35; box-shadow: 0 12px 32px rgba(0,0,0,0.5);">
-      
-      <!-- Header with Logo -->
-      <div style="background: ${headerGradient}; text-align: center; padding: 32px 24px 24px; border-bottom: 1px solid #2a2a35;">
-        <img src="https://i.postimg.cc/PxwLVrdh/227a55e3-ad16-4893-9e87-03dfc202814f.png" alt="LiquorBelle" style="width: 65px; height: auto; margin-bottom: 12px; border-radius: 12px;">
-        <div style="font-size: 24px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px;">Liquor<span style="color: ${accentColor};">Belle</span></div>
-        <div style="font-size: 12px; color: #888; margin-top: 6px;">Dagoretti's Finest • 24/7 Delivery</div>
-      </div>
-      
-      <!-- Status Badge -->
-      <div style="text-align: center; padding: 28px 24px 0;">
-        <span style="display: inline-block; background: ${statusBg}; color: ${statusColor}; padding: 8px 22px; border-radius: 50px; font-size: 12px; font-weight: 800; letter-spacing: 1px; border: 1px solid ${statusColor}40;">${statusText}</span>
-      </div>
-      
-      <!-- Greeting -->
-      <div style="padding: 24px 24px 0;">
-        <h2 style="color: #ffffff; font-size: 22px; font-weight: 700; margin: 0 0 8px;">Hello ${escapeHtml(customerName)},</h2>
-        <p style="color: #aaa; font-size: 15px; line-height: 1.5; margin: 0;">
-          ${isPaymentConfirmed ? '🎉 Your payment has been successfully confirmed! We\'re getting your order ready.' : '📋 Thank you for shopping with LiquorBelle! Your order has been received.'}
-        </p>
-      </div>
-      
-      <!-- Order Info Cards -->
-      <div style="display: flex; gap: 12px; flex-wrap: wrap; margin: 24px 24px 0;">
-        <div style="flex: 1; background: #1e1e28; border-radius: 16px; padding: 14px; min-width: 120px;">
-          <div style="color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Order Number</div>
-          <div style="color: #f0a500; font-size: 14px; font-weight: 800;">${orderId}</div>
-        </div>
-        <div style="flex: 1; background: #1e1e28; border-radius: 16px; padding: 14px; min-width: 120px;">
-          <div style="color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Order Date</div>
-          <div style="color: #e0e0e0; font-size: 13px; font-weight: 600;">${timestamp}</div>
-        </div>
-        <div style="flex: 1; background: #1e1e28; border-radius: 16px; padding: 14px; min-width: 120px;">
-          <div style="color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Payment</div>
-          <div style="color: ${accentColor}; font-size: 13px; font-weight: 700;">${paymentText}</div>
-        </div>
-      </div>
-      
-      <!-- Items Table -->
-      <div style="margin: 24px 24px 0;">
-        <div style="background: #1e1e28; border-radius: 20px; overflow: hidden;">
-          <div style="background: #24242f; padding: 14px 20px;">
-            <span style="font-weight: 700; color: #f0a500; font-size: 14px;">🍾 Order Summary</span>
-          </div>
-          <table style="width: 100%; border-collapse: collapse; padding: 0 20px;">
-            <tbody>
-              ${itemsRows}
-            </tbody>
-           </table>
-          
-          <!-- BOLD SUBTOTAL/DELIVERY SECTION - CARD STYLE -->
-          <div style="background: #252530; margin: 12px 16px 16px 16px; border-radius: 16px; padding: 4px 0;">
-            <div style="display: flex; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid #333344;">
-              <span style="color: #ccc; font-size: 15px; font-weight: 600;">Subtotal</span>
-              <span style="color: #f0a500; font-size: 16px; font-weight: 800;">KES ${subtotal.toLocaleString()}</span>
-            </div>
-            <div style="display: flex; justify-content: space-between; padding: 14px 20px;">
-              <span style="color: #ccc; font-size: 15px; font-weight: 600;">Delivery Fee</span>
-              <span style="color: ${delivery === 0 ? '#2ecc71' : '#f0a500'}; font-size: 16px; font-weight: 800;">${deliveryText}</span>
-            </div>
-          </div>
-          
-          <!-- TOTAL - HIGHLIGHTED -->
-          <div style="background: linear-gradient(135deg, #2a1a1a, #1a1a1a); margin: 0 16px 20px 16px; border-radius: 16px; padding: 16px 20px; border-left: 4px solid #e03131;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span style="color: #ffffff; font-size: 18px; font-weight: 800;">TOTAL</span>
-              <span style="color: #e03131; font-size: 24px; font-weight: 900;">KES ${total.toLocaleString()}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-      
-      <!-- Delivery Address Card -->
-      <div style="margin: 20px 24px;">
-        <div style="background: #1e1e28; border-radius: 20px; padding: 18px; border: 1px solid #2a2a35;">
-          <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
-            <span style="font-size: 22px;">📍</span>
-            <span style="color: #f0a500; font-weight: 800; font-size: 12px; letter-spacing: 0.5px;">DELIVERY ADDRESS</span>
-          </div>
-          <div style="color: #e0e0e0; font-size: 14px; line-height: 1.5; margin-bottom: 10px;">${escapeHtml(address)}</div>
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="font-size: 14px;">📞</span>
-            <span style="color: #aaa; font-size: 13px;">${formattedPhone}</span>
-          </div>
-        </div>
-      </div>
-      
-      <!-- Delivery Progress Card -->
-      <div style="margin: 0 24px 24px;">
-        <div style="background: ${isPaymentConfirmed ? 'rgba(46,204,113,0.06)' : 'rgba(240,165,0,0.06)'}; border-radius: 20px; padding: 20px; text-align: center; border: 1px solid ${accentColor}30;">
-          <div style="font-size: 36px; margin-bottom: 10px;">${isPaymentConfirmed ? '🚚✨' : '⏳📦'}</div>
-          <div style="color: ${accentColor}; font-weight: 800; font-size: 16px; margin-bottom: 6px;">${isPaymentConfirmed ? 'Order Confirmed & Processing' : 'Payment Pending Confirmation'}</div>
-          <div style="color: #aaa; font-size: 13px; line-height: 1.4;">${isPaymentConfirmed ? 'Our rider will contact you on ' + formattedPhone + ' within 45 minutes' : 'Complete your M-PESA payment to confirm this order'}</div>
-        </div>
-      </div>
-      
-      <!-- Action Button -->
-      <div style="text-align: center; padding: 0 24px 24px;">
-        <a href="https://teemoreg.github.io/liquorbelle/track-orders.html?email=${encodeURIComponent(orderData.customerEmail || '')}" style="display: inline-block; background: linear-gradient(135deg, #e03131, #c0392b); color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 60px; font-weight: 700; font-size: 15px; box-shadow: 0 4px 12px rgba(224,49,49,0.3);">🔍 Track Your Order</a>
-      </div>
-      
-      <!-- Footer -->
-      <div style="text-align: center; padding: 20px 24px 24px; background: #0d0d12; border-top: 1px solid #2a2a35;">
-        <div style="margin-bottom: 12px;">
-          <span style="color: #555; font-size: 11px;">📞 +254 748 894 443</span>
-          <span style="color: #444; margin: 0 8px;">•</span>
-          <span style="color: #555; font-size: 11px;">💬 WhatsApp 24/7</span>
-        </div>
-        <p style="color: #444; font-size: 10px; margin: 8px 0 0;">⚠️ You must be over 18 to purchase alcohol. Drink responsibly.</p>
-        <p style="color: #3a3a3a; font-size: 9px; margin: 12px 0 0;">LiquorBelle — Dagoretti Road, Opposite Quickmart</p>
-      </div>
-    </div>
-  </div>
+<body style="margin:0;padding:0;background:#0a0a0f;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<div style="max-width:580px;margin:0 auto;padding:20px;">
+<div style="background:linear-gradient(135deg,#111118 0%,#17171f 100%);border-radius:28px;overflow:hidden;border:1px solid #2a2a35;box-shadow:0 12px 32px rgba(0,0,0,0.5);">
+<div style="background:${headerGradient};text-align:center;padding:32px 24px 24px;border-bottom:1px solid #2a2a35;">
+<img src="https://i.postimg.cc/PxwLVrdh/227a55e3-ad16-4893-9e87-03dfc202814f.png" alt="LiquorBelle" style="width:65px;height:auto;margin-bottom:12px;border-radius:12px;">
+<div style="font-size:24px;font-weight:800;color:#fff;letter-spacing:-0.5px;">Liquor<span style="color:${accentColor};">Belle</span></div>
+<div style="font-size:12px;color:#888;margin-top:6px;">Dagoretti's Finest • 24/7 Delivery</div>
+</div>
+<div style="text-align:center;padding:28px 24px 0;"><span style="display:inline-block;background:${statusBg};color:${statusColor};padding:8px 22px;border-radius:50px;font-size:12px;font-weight:800;letter-spacing:1px;border:1px solid ${statusColor}40;">${statusText}</span></div>
+<div style="padding:24px 24px 0;"><h2 style="color:#fff;font-size:22px;font-weight:700;margin:0 0 8px;">Hello ${escapeHtml(customerName)},</h2><p style="color:#aaa;font-size:15px;line-height:1.5;margin:0;">${isPaymentConfirmed ? '🎉 Your payment has been successfully confirmed! We\'re getting your order ready.' : '📋 Thank you for shopping with LiquorBelle! Your order has been received.'}</p></div>
+<div style="display:flex;gap:12px;flex-wrap:wrap;margin:24px 24px 0;"><div style="flex:1;background:#1e1e28;border-radius:16px;padding:14px;"><div style="color:#888;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Order Number</div><div style="color:#f0a500;font-size:14px;font-weight:800;">${orderId}</div></div><div style="flex:1;background:#1e1e28;border-radius:16px;padding:14px;"><div style="color:#888;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Order Date</div><div style="color:#e0e0e0;font-size:13px;font-weight:600;">${timestamp}</div></div><div style="flex:1;background:#1e1e28;border-radius:16px;padding:14px;"><div style="color:#888;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Payment</div><div style="color:${accentColor};font-size:13px;font-weight:700;">${paymentText}</div></div></div>
+<div style="margin:24px 24px 0;"><div style="background:#1e1e28;border-radius:20px;overflow:hidden;"><div style="background:#24242f;padding:14px 20px;"><span style="font-weight:700;color:#f0a500;font-size:14px;">🍾 Order Summary</span></div><table style="width:100%;border-collapse:collapse;padding:0 20px;"><tbody>${itemsRows}</tbody></table><div style="background:#252530;margin:12px 16px 16px 16px;border-radius:16px;padding:4px 0;"><div style="display:flex;justify-content:space-between;padding:14px 20px;border-bottom:1px solid #333344;"><span style="color:#ccc;font-size:15px;font-weight:600;">Subtotal</span><span style="color:#f0a500;font-size:16px;font-weight:800;">KES ${subtotal.toLocaleString()}</span></div><div style="display:flex;justify-content:space-between;padding:14px 20px;"><span style="color:#ccc;font-size:15px;font-weight:600;">Delivery Fee</span><span style="color:${delivery === 0 ? '#2ecc71' : '#f0a500'};font-size:16px;font-weight:800;">${deliveryText}</span></div></div><div style="background:linear-gradient(135deg,#2a1a1a,#1a1a1a);margin:0 16px 20px 16px;border-radius:16px;padding:16px 20px;border-left:4px solid #e03131;"><div style="display:flex;justify-content:space-between;align-items:center;"><span style="color:#fff;font-size:18px;font-weight:800;">TOTAL</span><span style="color:#e03131;font-size:24px;font-weight:900;">KES ${total.toLocaleString()}</span></div></div></div></div>
+<div style="margin:20px 24px;"><div style="background:#1e1e28;border-radius:20px;padding:18px;border:1px solid #2a2a35;"><div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;"><span style="font-size:22px;">📍</span><span style="color:#f0a500;font-weight:800;font-size:12px;letter-spacing:0.5px;">DELIVERY ADDRESS</span></div><div style="color:#e0e0e0;font-size:14px;line-height:1.5;margin-bottom:10px;">${escapeHtml(address)}</div><div style="display:flex;align-items:center;gap:8px;"><span style="font-size:14px;">📞</span><span style="color:#aaa;font-size:13px;">${formattedPhone}</span></div></div></div>
+<div style="margin:0 24px 24px;"><div style="background:${isPaymentConfirmed ? 'rgba(46,204,113,0.06)' : 'rgba(240,165,0,0.06)'};border-radius:20px;padding:20px;text-align:center;border:1px solid ${accentColor}30;"><div style="font-size:36px;margin-bottom:10px;">${isPaymentConfirmed ? '🚚✨' : '⏳📦'}</div><div style="color:${accentColor};font-weight:800;font-size:16px;margin-bottom:6px;">${isPaymentConfirmed ? 'Order Confirmed & Processing' : 'Payment Pending Confirmation'}</div><div style="color:#aaa;font-size:13px;line-height:1.4;">${isPaymentConfirmed ? 'Our rider will contact you on ' + formattedPhone + ' within 45 minutes' : 'Complete your M-PESA payment to confirm this order'}</div></div></div>
+<div style="text-align:center;padding:0 24px 24px;"><a href="https://teemoreg.github.io/liquorbelle/track-orders.html?email=${encodeURIComponent(orderData.customerEmail || '')}" style="display:inline-block;background:linear-gradient(135deg,#e03131,#c0392b);color:#fff;text-decoration:none;padding:14px 32px;border-radius:60px;font-weight:700;font-size:15px;box-shadow:0 4px 12px rgba(224,49,49,0.3);">🔍 Track Your Order</a></div>
+<div style="text-align:center;padding:20px 24px 24px;background:#0d0d12;border-top:1px solid #2a2a35;"><div style="margin-bottom:12px;"><span style="color:#555;font-size:11px;">📞 +254 748 894 443</span><span style="color:#444;margin:0 8px;">•</span><span style="color:#555;font-size:11px;">💬 WhatsApp 24/7</span></div><p style="color:#444;font-size:10px;margin:8px 0 0;">⚠️ You must be over 18 to purchase alcohol. Drink responsibly.</p><p style="color:#3a3a3a;font-size:9px;margin:12px 0 0;">LiquorBelle — Dagoretti Road, Opposite Quickmart</p></div>
+</div>
+</div>
 </body>
 </html>`;
+  return fullHtml;
 }
 
 // ==================== SEND ORDER PAID EMAIL ====================
@@ -523,22 +576,12 @@ app.post('/api/send-order-email', async (req, res) => {
   }
 });
 
-// ==================== DATABASE API ENDPOINTS WITH VARIANTS SUPPORT ====================
+// ==================== DATABASE API ENDPOINTS (MONGODB) ====================
 
-// Get all products (returns variants as JSON)
+// Get all products
 app.get('/api/db/products', async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT id, name, category, badge, image, description, variants, created_at, updated_at
-      FROM products 
-      ORDER BY created_at DESC
-    `);
-    
-    const products = result.rows.map(p => ({
-      ...p,
-      variants: p.variants || [{ size: '750ml', price: 0, discount: 0 }]
-    }));
-    
+    const products = await db.collection('products').find({}).sort({ created_at: -1 }).toArray();
     res.json({ success: true, products });
   } catch (err) {
     console.error('Products fetch error:', err);
@@ -555,20 +598,24 @@ app.post('/api/db/products', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Name and at least one variant required' });
     }
     
-    // Validate each variant has required fields
     for (const v of variants) {
-      if (!v.size || !v.price) {
-        return res.status(400).json({ success: false, message: 'Each variant must have size and price' });
+      if (!v.size || typeof v.price !== 'number') {
+        return res.status(400).json({ success: false, message: 'Each variant must have size and valid price' });
       }
     }
     
-    const result = await pool.query(`
-      INSERT INTO products (name, category, badge, image, description, variants)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING *
-    `, [name, category, badge, image, description, JSON.stringify(variants)]);
-    
-    res.json({ success: true, product: result.rows[0] });
+    const product = { 
+      name, 
+      category: category || 'other', 
+      badge: badge || '', 
+      image: image || '', 
+      description: description || '', 
+      variants, 
+      created_at: new Date(), 
+      updated_at: new Date() 
+    };
+    const result = await db.collection('products').insertOne(product);
+    res.json({ success: true, product: { id: result.insertedId, ...product } });
   } catch (err) {
     console.error('Product create error:', err);
     res.status(500).json({ success: false, message: 'Failed to create product' });
@@ -585,25 +632,22 @@ app.put('/api/db/products/:id', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Name and at least one variant required' });
     }
     
-    // Validate each variant
     for (const v of variants) {
-      if (!v.size || !v.price) {
-        return res.status(400).json({ success: false, message: 'Each variant must have size and price' });
+      if (!v.size || typeof v.price !== 'number') {
+        return res.status(400).json({ success: false, message: 'Each variant must have size and valid price' });
       }
     }
     
-    const result = await pool.query(`
-      UPDATE products 
-      SET name = $1, category = $2, badge = $3, image = $4, description = $5, variants = $6, updated_at = NOW()
-      WHERE id = $7
-      RETURNING *
-    `, [name, category, badge, image, description, JSON.stringify(variants), id]);
+    const result = await db.collection('products').updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { name, category, badge, image, description, variants, updated_at: new Date() } }
+    );
     
-    if (result.rows.length === 0) {
+    if (result.matchedCount === 0) {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
     
-    res.json({ success: true, product: result.rows[0] });
+    res.json({ success: true });
   } catch (err) {
     console.error('Product update error:', err);
     res.status(500).json({ success: false, message: 'Failed to update product' });
@@ -613,8 +657,10 @@ app.put('/api/db/products/:id', async (req, res) => {
 // Delete product
 app.delete('/api/db/products/:id', async (req, res) => {
   try {
-    const { id } = req.params;
-    await pool.query('DELETE FROM products WHERE id = $1', [id]);
+    const result = await db.collection('products').deleteOne({ _id: new ObjectId(req.params.id) });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
     res.json({ success: true });
   } catch (err) {
     console.error('Product delete error:', err);
@@ -622,21 +668,11 @@ app.delete('/api/db/products/:id', async (req, res) => {
   }
 });
 
-// ==================== ORDERS API ====================
-
 // Get all orders
 app.get('/api/db/orders', async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT o.*, 
-        COALESCE(
-          (SELECT json_agg(row_to_json(oi)) FROM order_items oi WHERE oi.order_id = o.id),
-          '[]'::json
-        ) as items
-      FROM orders o
-      ORDER BY o.created_at DESC
-    `);
-    res.json({ success: true, orders: result.rows });
+    const orders = await db.collection('orders').find({}).sort({ created_at: -1 }).toArray();
+    res.json({ success: true, orders });
   } catch (err) {
     console.error('Orders fetch error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch orders' });
@@ -647,21 +683,11 @@ app.get('/api/db/orders', async (req, res) => {
 app.get('/api/db/orders/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query(`
-      SELECT o.*, 
-        COALESCE(
-          (SELECT json_agg(row_to_json(oi)) FROM order_items oi WHERE oi.order_id = o.id),
-          '[]'::json
-        ) as items
-      FROM orders o
-      WHERE o.id = $1
-    `, [id]);
-    
-    if (result.rows.length === 0) {
+    const order = await db.collection('orders').findOne({ _id: new ObjectId(id) });
+    if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
-    
-    res.json({ success: true, order: result.rows[0] });
+    res.json({ success: true, order });
   } catch (err) {
     console.error('Order fetch error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch order' });
@@ -670,41 +696,32 @@ app.get('/api/db/orders/:id', async (req, res) => {
 
 // Create order
 app.post('/api/db/orders', async (req, res) => {
-  const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    const { orderNumber, userId, customerName, customerEmail, phone, address, notes, subtotal, delivery, total, paymentMethod, status, items } = req.body;
     
-    const { 
-      orderNumber, userId, customerName, customerEmail, phone, address, 
-      notes, subtotal, delivery, total, paymentMethod, status, items 
-    } = req.body;
+    const order = {
+      order_number: orderNumber,
+      user_id: userId,
+      customer_name: customerName,
+      customer_email: customerEmail,
+      phone,
+      address,
+      notes,
+      subtotal,
+      delivery,
+      total,
+      payment_method: paymentMethod,
+      status: status || 'pending',
+      items: items.map(item => ({ ...item, size: item.size || '750ml' })),
+      created_at: new Date(),
+      updated_at: new Date()
+    };
     
-    // Insert order
-    const orderResult = await client.query(`
-      INSERT INTO orders (order_number, user_id, customer_name, customer_email, phone, address, notes, subtotal, delivery, total, payment_method, status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-      RETURNING *
-    `, [orderNumber, userId, customerName, customerEmail, phone, address, notes, subtotal, delivery, total, paymentMethod, status || 'pending']);
-    
-    const order = orderResult.rows[0];
-    
-    // Insert order items
-    for (const item of items) {
-      await client.query(`
-        INSERT INTO order_items (order_id, product_id, product_name, size, quantity, price)
-        VALUES ($1, $2, $3, $4, $5, $6)
-      `, [order.id, item.product_id, item.name, item.size || '750ml', item.qty, item.price]);
-    }
-    
-    await client.query('COMMIT');
-    
-    res.json({ success: true, order });
+    const result = await db.collection('orders').insertOne(order);
+    res.json({ success: true, order: { id: result.insertedId, ...order } });
   } catch (err) {
-    await client.query('ROLLBACK');
     console.error('Create order error:', err);
     res.status(500).json({ success: false, message: 'Failed to create order' });
-  } finally {
-    client.release();
   }
 });
 
@@ -714,40 +731,36 @@ app.put('/api/db/orders/:id/status', async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
     
-    const result = await pool.query(`
-      UPDATE orders 
-      SET status = $1, updated_at = NOW()
-      WHERE id = $2
-      RETURNING *
-    `, [status, id]);
+    const result = await db.collection('orders').updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { status, updated_at: new Date() } }
+    );
     
-    if (result.rows.length === 0) {
+    if (result.matchedCount === 0) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
     
     // If status changed to paid, send confirmation email
     if (status === 'paid') {
-      const order = result.rows[0];
-      const itemsResult = await pool.query(`
-        SELECT * FROM order_items WHERE order_id = $1
-      `, [id]);
-      
-      await sendOrderPaidEmail(
-        order.id,
-        order.customer_email,
-        order.customer_name,
-        order.order_number,
-        order.total,
-        order.address,
-        itemsResult.rows,
-        order.subtotal,
-        order.delivery,
-        order.phone,
-        order.created_at
-      );
+      const order = await db.collection('orders').findOne({ _id: new ObjectId(id) });
+      if (order && order.customer_email) {
+        await sendOrderPaidEmail(
+          order.id,
+          order.customer_email,
+          order.customer_name,
+          order.order_number,
+          order.total,
+          order.address,
+          order.items || [],
+          order.subtotal,
+          order.delivery,
+          order.phone,
+          order.created_at
+        );
+      }
     }
     
-    res.json({ success: true, order: result.rows[0] });
+    res.json({ success: true });
   } catch (err) {
     console.error('Order status update error:', err);
     res.status(500).json({ success: false, message: 'Failed to update order status' });
@@ -757,9 +770,10 @@ app.put('/api/db/orders/:id/status', async (req, res) => {
 // Delete order
 app.delete('/api/db/orders/:id', async (req, res) => {
   try {
-    const { id } = req.params;
-    await pool.query('DELETE FROM order_items WHERE order_id = $1', [id]);
-    await pool.query('DELETE FROM orders WHERE id = $1', [id]);
+    const result = await db.collection('orders').deleteOne({ _id: new ObjectId(req.params.id) });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
     res.json({ success: true });
   } catch (err) {
     console.error('Order delete error:', err);
@@ -767,25 +781,26 @@ app.delete('/api/db/orders/:id', async (req, res) => {
   }
 });
 
-// ==================== DASHBOARD STATS ====================
+// Dashboard stats
 app.get('/api/db/stats', async (req, res) => {
   try {
-    const ordersResult = await pool.query('SELECT COUNT(*) as count FROM orders');
-    const productsResult = await pool.query('SELECT COUNT(*) as count FROM products');
-    const revenueResult = await pool.query('SELECT COALESCE(SUM(total), 0) as total FROM orders WHERE status = $1', ['delivered']);
-    const pendingResult = await pool.query('SELECT COUNT(*) as count FROM orders WHERE status = $1', ['pending']);
-    const paidResult = await pool.query('SELECT COUNT(*) as count FROM orders WHERE status = $1', ['paid']);
-    const deliveredResult = await pool.query('SELECT COUNT(*) as count FROM orders WHERE status = $1', ['delivered']);
+    const totalOrders = await db.collection('orders').countDocuments();
+    const totalProducts = await db.collection('products').countDocuments();
+    const deliveredOrders = await db.collection('orders').find({ status: 'delivered' }).toArray();
+    const totalRevenue = deliveredOrders.reduce((sum, o) => sum + (o.total || 0), 0);
+    const pendingOrdersCount = await db.collection('orders').countDocuments({ status: 'pending' });
+    const paidOrdersCount = await db.collection('orders').countDocuments({ status: 'paid' });
+    const deliveredOrdersCount = await db.collection('orders').countDocuments({ status: 'delivered' });
     
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       stats: {
-        totalOrders: parseInt(ordersResult.rows[0].count),
-        totalProducts: parseInt(productsResult.rows[0].count),
-        totalRevenue: parseInt(revenueResult.rows[0].total),
-        pendingOrders: parseInt(pendingResult.rows[0].count),
-        paidOrders: parseInt(paidResult.rows[0].count),
-        deliveredOrders: parseInt(deliveredResult.rows[0].count)
+        totalOrders,
+        totalProducts,
+        totalRevenue,
+        pendingOrders: pendingOrdersCount,
+        paidOrders: paidOrdersCount,
+        deliveredOrders: deliveredOrdersCount
       }
     });
   } catch (err) {
@@ -794,21 +809,21 @@ app.get('/api/db/stats', async (req, res) => {
   }
 });
 
-// ==================== DELIVERY SETTINGS ====================
+// Delivery settings
 app.get('/api/admin/delivery-settings', async (req, res) => {
   try {
-    const result = await pool.query(`SELECT * FROM settings WHERE key = 'delivery'`);
-    if (result.rows.length === 0) {
-      return res.json({ 
-        success: true, 
-        settings: { 
-          delivery_fee: 150, 
+    const settings = await db.collection('settings').findOne({ key: 'delivery' });
+    if (!settings) {
+      return res.json({
+        success: true,
+        settings: {
+          delivery_fee: 150,
           free_delivery_threshold: 3000,
-          delivery_enabled: true 
-        } 
+          delivery_enabled: true
+        }
       });
     }
-    res.json({ success: true, settings: result.rows[0].value });
+    res.json({ success: true, settings: settings.value });
   } catch (err) {
     console.error('Get delivery settings error:', err);
     res.status(500).json({ success: false, message: 'Failed to get settings' });
@@ -818,13 +833,11 @@ app.get('/api/admin/delivery-settings', async (req, res) => {
 app.post('/api/admin/delivery-settings', async (req, res) => {
   try {
     const { delivery_fee, free_delivery_threshold, delivery_enabled } = req.body;
-    
-    await pool.query(`
-      INSERT INTO settings (key, value) 
-      VALUES ('delivery', $1) 
-      ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()
-    `, [JSON.stringify({ delivery_fee, free_delivery_threshold, delivery_enabled }), JSON.stringify({ delivery_fee, free_delivery_threshold, delivery_enabled })]);
-    
+    await db.collection('settings').updateOne(
+      { key: 'delivery' },
+      { $set: { value: { delivery_fee, free_delivery_threshold, delivery_enabled }, updated_at: new Date() } },
+      { upsert: true }
+    );
     res.json({ success: true, message: 'Delivery settings saved' });
   } catch (err) {
     console.error('Update delivery settings error:', err);
@@ -832,69 +845,11 @@ app.post('/api/admin/delivery-settings', async (req, res) => {
   }
 });
 
-// ==================== MIGRATION: UPDATE PRODUCTS TABLE ====================
-app.post('/api/admin/migrate-products', async (req, res) => {
-  try {
-    // First, check if variants column exists, if not add it
-    const checkColumn = await pool.query(`
-      SELECT column_name 
-      FROM information_schema.columns 
-      WHERE table_name = 'products' AND column_name = 'variants'
-    `);
-    
-    if (checkColumn.rows.length === 0) {
-      await pool.query(`
-        ALTER TABLE products ADD COLUMN variants JSONB DEFAULT '[{"size":"750ml","price":0,"discount":0}]'
-      `);
-      console.log('✅ Added variants column to products table');
-    }
-    
-    // Also add size column to order_items if not exists
-    const checkSizeColumn = await pool.query(`
-      SELECT column_name 
-      FROM information_schema.columns 
-      WHERE table_name = 'order_items' AND column_name = 'size'
-    `);
-    
-    if (checkSizeColumn.rows.length === 0) {
-      await pool.query(`
-        ALTER TABLE order_items ADD COLUMN size VARCHAR(10) DEFAULT '750ml'
-      `);
-      console.log('✅ Added size column to order_items table');
-    }
-    
-    // Migrate existing products to variants format if they have price column
-    const existingProducts = await pool.query(`
-      SELECT id, name, category, badge, image, description, price, discount_percent 
-      FROM products 
-      WHERE variants IS NULL OR variants = '[]'::jsonb
-    `);
-    
-    for (const p of existingProducts.rows) {
-      const variants = [{ 
-        size: '750ml', 
-        price: p.price || 0, 
-        discount: p.discount_percent || 0 
-      }];
-      
-      await pool.query(`
-        UPDATE products 
-        SET variants = $1, price = NULL, discount_percent = NULL
-        WHERE id = $2
-      `, [JSON.stringify(variants), p.id]);
-    }
-    
-    res.json({ success: true, message: 'Migration completed successfully' });
-  } catch (err) {
-    console.error('Migration error:', err);
-    res.status(500).json({ success: false, message: 'Migration failed: ' + err.message });
-  }
-});
-
-// ==================== HEALTH CHECK ====================
+// Health check
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
+    database: 'MongoDB',
     brevoConfigured: !!BREVO_API_KEY,
     message: 'LiquorBelle API is running with variants support',
     uptime: process.uptime(),
@@ -910,24 +865,12 @@ app.use((err, req, res, next) => {
 
 // ==================== START SERVER ====================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, async () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📧 Brevo API Key: ${BREVO_API_KEY ? '✅ Configured' : '❌ Missing'}`);
-  console.log(`💳 M-PESA: ${CONSUMER_KEY ? '✅ Configured' : '❌ Missing'}`);
-  console.log(`🔒 Rate Limiting: ✅ Active`);
-  console.log(`🗄️ Database: ${process.env.DATABASE_URL ? '✅ Connected' : '❌ Missing'}`);
-  
-  // Run migration on startup
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS settings (
-        key VARCHAR(50) PRIMARY KEY,
-        value JSONB NOT NULL,
-        updated_at TIMESTAMP DEFAULT NOW()
-      )
-    `);
-    console.log('✅ Settings table ready');
-  } catch (err) {
-    console.error('Settings table error:', err.message);
-  }
+connectDB().then(() => {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`📧 Brevo API Key: ${BREVO_API_KEY ? '✅ Configured' : '❌ Missing'}`);
+    console.log(`💳 M-PESA: ${CONSUMER_KEY && CONSUMER_KEY !== 'YOUR_CONSUMER_KEY' ? '✅ Configured' : '❌ Missing'}`);
+    console.log(`🔒 Rate Limiting: ✅ Active`);
+    console.log(`🗄️ MongoDB: ✅ Connected (Free forever, never expires)`);
+  });
 });
