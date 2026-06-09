@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-const compression = require('compression'); // ADDED: For faster responses
+const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const { MongoClient, ObjectId } = require('mongodb');
 const bcrypt = require('bcryptjs');
@@ -24,9 +24,9 @@ if (!process.env.MONGODB_URI) {
 
 const app = express();
 app.use(cors());
-app.set('trust proxy', 1);  // Fixes X-Forwarded-For warning
+app.set('trust proxy', 1);
 app.use(express.json());
-app.use(compression()); // ADDED: Gzip compression for faster responses
+app.use(compression());
 
 // ==================== JWT CONFIG ====================
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -34,10 +34,10 @@ const JWT_EXPIRY = '7d';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const CASHIER_PASSWORD = process.env.CASHIER_PASSWORD || 'cashier123';
 
-// ==================== RATE LIMITING - INCREASED LIMITS ====================
+// ==================== RATE LIMITING ====================
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200, // CHANGED: 100 → 200
+  max: 200,
   message: { success: false, message: 'Too many requests, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -69,7 +69,7 @@ const authLimiter = rateLimit({
 
 const orderCreateLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 50, // CHANGED: 20 → 50
+  max: 50,
   message: { success: false, message: 'Too many orders placed. Please wait.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -77,7 +77,7 @@ const orderCreateLimiter = rateLimit({
 
 const adminLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200, // CHANGED: 50 → 200
+  max: 200,
   message: { success: false, message: 'Too many admin requests. Please slow down.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -188,12 +188,18 @@ async function sendCodOrderReceivedEmail(orderData) {
   const { orderId, customerName, items, subtotal, delivery, total, address, phone, customerEmail } = orderData;
   const deliveryText = delivery === 0 ? 'FREE' : `KES ${delivery.toLocaleString()}`;
   
-  const itemsHtml = (items || []).map(item => `
-    <tr style="border-bottom:1px solid #1c1c28;">
-      <td style="padding:12px 0;"><span style="color:#e0e0e0;">${escapeHtml(item.name)} x${item.qty}</span><br><span style="color:#555;font-size:11px;">${escapeHtml(item.size || '750ml')}</span></td>
-      <td style="padding:12px 0;text-align:right;color:#f0a500;">KES ${(item.price * item.qty).toLocaleString()}</td>
-    </tr>
-  `).join('');
+  const itemsHtml = (items || []).map(item => {
+    const productName = item.product_name || item.name || 'Product';
+    const productQty = item.quantity || item.qty || 1;
+    const productPrice = item.price || 0;
+    const productSize = item.size || '750ml';
+    return `
+      <tr style="border-bottom:1px solid #1c1c28;">
+        <td style="padding:12px 0;"><span style="color:#e0e0e0;">${escapeHtml(productName)} x${productQty}</span><br><span style="color:#555;font-size:11px;">${escapeHtml(productSize)}</span></td>
+        <td style="padding:12px 0;text-align:right;color:#f0a500;">KES ${(productPrice * productQty).toLocaleString()}</td>
+      </tr>
+    `;
+  }).join('');
 
   const html = `<!DOCTYPE html>
 <html>
@@ -261,12 +267,18 @@ async function sendMpesaOrderReceivedEmail(orderData) {
   const { orderId, customerName, items, subtotal, delivery, total, address, phone, customerEmail } = orderData;
   const deliveryText = delivery === 0 ? 'FREE' : `KES ${delivery.toLocaleString()}`;
   
-  const itemsHtml = (items || []).map(item => `
-    <tr style="border-bottom:1px solid #1c1c28;">
-      <td style="padding:12px 0;"><span style="color:#e0e0e0;">${escapeHtml(item.name)} x${item.qty}</span><br><span style="color:#555;font-size:11px;">${escapeHtml(item.size || '750ml')}</span></td>
-      <td style="padding:12px 0;text-align:right;color:#f0a500;">KES ${(item.price * item.qty).toLocaleString()}</td>
-    </table>
-  `).join('');
+  const itemsHtml = (items || []).map(item => {
+    const productName = item.product_name || item.name || 'Product';
+    const productQty = item.quantity || item.qty || 1;
+    const productPrice = item.price || 0;
+    const productSize = item.size || '750ml';
+    return `
+      <tr style="border-bottom:1px solid #1c1c28;">
+        <td style="padding:12px 0;"><span style="color:#e0e0e0;">${escapeHtml(productName)} x${productQty}</span><br><span style="color:#555;font-size:11px;">${escapeHtml(productSize)}</span></td>
+        <td style="padding:12px 0;text-align:right;color:#f0a500;">KES ${(productPrice * productQty).toLocaleString()}</td>
+      </tr>
+    `;
+  }).join('');
 
   const html = `<!DOCTYPE html>
 <html>
@@ -321,21 +333,34 @@ async function sendMpesaOrderReceivedEmail(orderData) {
     await axios.post('https://api.brevo.com/v3/smtp/email', {
       sender: { name: 'LiquorBelle', email: 'timblax0@gmail.com' },
       to: [{ email: customerEmail }],
-      subject: `✅ Order Received - ${orderId} - LiquorBelle`,
+      subject: `✅ Payment Received - ${orderId} - LiquorBelle`,
       htmlContent: html
     }, { headers: { 'api-key': BREVO_API_KEY } });
-    console.log(`📧 M-PESA order received email sent to ${customerEmail}`);
+    console.log(`📧 M-PESA payment received email sent to ${customerEmail}`);
   } catch (err) { console.error('Email error:', err.message); }
 }
 
-// ==================== EMAIL 3: ORDER DELIVERED SUCCESSFULLY (Both COD & M-PESA) ====================
+// ==================== EMAIL 3: ORDER DELIVERED SUCCESSFULLY (FIXED - handles both data structures) ====================
 async function sendOrderDeliveredEmail(orderData) {
   if (!BREVO_API_KEY) return;
   const { orderId, customerName, items, total, phone, customerEmail } = orderData;
   
-  const itemsHtml = (items || []).map(item => `
-    <tr><td style="padding:6px 0;color:#ddd;">${escapeHtml(item.name)} x${item.qty}</td><td style="text-align:right;color:#2ecc71;">KES ${(item.price * item.qty).toLocaleString()}</td></tr>
-  `).join('');
+  // FIXED: Properly handle items from database (which may have product_name instead of name)
+  const itemsHtml = (items || []).map(item => {
+    // Get product name from various possible property names
+    const productName = item.product_name || item.name || item.product || 'Product';
+    // Get quantity from various possible property names
+    const quantity = item.quantity || item.qty || 1;
+    // Get price from various possible property names
+    const productPrice = item.price || item.unit_price || 0;
+    
+    return `
+      <tr style="border-bottom:1px solid #1c1c28;">
+        <td style="padding:6px 0;color:#ddd;">${escapeHtml(productName)} x${quantity}</td>
+        <td style="text-align:right;color:#2ecc71;">KES ${(productPrice * quantity).toLocaleString()}</td>
+      </tr>
+    `;
+  }).join('');
 
   const html = `<!DOCTYPE html>
 <html>
@@ -359,7 +384,7 @@ async function sendOrderDeliveredEmail(orderData) {
   <div style="margin:0 28px;background:#16161f;border-radius:16px;padding:16px;">
     <div style="color:#2ecc71;">📦 ORDER #${escapeHtml(orderId)}</div>
     <table style="width:100%;margin-top:12px;">${itemsHtml}</table>
-    <div style="margin-top:12px;padding-top:12px;border-top:1px solid #1e1e2c;text-align:right;"><span style="color:#2ecc71;font-size:18px;font-weight:800;">Total: KES ${total.toLocaleString()}</span></div>
+    <div style="margin-top:12px;padding-top:12px;border-top:1px solid #1e1e2c;text-align:right;"><span style="color:#2ecc71;font-size:18px;font-weight:800;">Total: KES ${(total || 0).toLocaleString()}</span></div>
   </div>
   <div style="padding:20px 28px;text-align:center;">
     <a href="https://teemoreg.github.io/liquorbelle/shop.html" style="background:#2ecc71;color:#fff;padding:12px 32px;border-radius:50px;text-decoration:none;font-weight:800;">🛒 Shop Again</a>
@@ -607,7 +632,7 @@ app.post('/api/db/orders', async (req, res) => {
     order_number: orderNumber, customer_name: customerName, customer_email: customerEmail.toLowerCase(),
     phone, address, notes: notes || '', subtotal: subtotal || 0, delivery: delivery || 0, total,
     payment_method: paymentMethod, status: 'pending',
-    items: items.map(item => ({ ...item, size: item.size || '750ml' })),
+    items: items.map(item => ({ product_name: item.name, ...item, size: item.size || '750ml' })),
     created_at: new Date(), updated_at: new Date()
   };
   const result = await db.collection('orders').insertOne(order);
