@@ -3,7 +3,6 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
-const { body, validationResult } = require('express-validator');
 const { MongoClient, ObjectId } = require('mongodb');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -137,7 +136,6 @@ async function connectDB() {
     db = client.db('liquorbelle');
     console.log('✅ MongoDB connected');
 
-    // Create indexes
     await db.collection('products').createIndex({ name: 1 });
     await db.collection('orders').createIndex({ customer_email: 1 });
     await db.collection('orders').createIndex({ created_at: -1 });
@@ -146,157 +144,14 @@ async function connectDB() {
     await db.collection('pending_orders').createIndex({ created_at: 1 }, { expireAfterSeconds: 3600 });
     await db.collection('otps').createIndex({ created_at: 1 }, { expireAfterSeconds: 600 });
 
-    // Check if products exist - if not, seed with initial products
     const productCount = await db.collection('products').countDocuments();
     if (productCount === 0) {
       console.log('📦 No products found. Seeding initial products...');
-      await db.collection('products').insertMany([
-        { 
-          name: "Chrome Gin", 
-          category: "gin", 
-          badge: "local", 
-          image: "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop", 
-          description: "Premium Kenyan gin with unique botanical blend", 
-          variants: [
-            { size: "250ml", price: 600, discount: 0 },
-            { size: "500ml", price: 1100, discount: 0 },
-            { size: "750ml", price: 1650, discount: 0 },
-            { size: "1L", price: 2200, discount: 0 }
-          ], 
-          isTrending: true,
-          created_at: new Date() 
-        },
-        { 
-          name: "Konyagi", 
-          category: "brandy", 
-          badge: "local", 
-          image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", 
-          description: "Tanzania's finest premium spirit", 
-          variants: [
-            { size: "250ml", price: 250, discount: 0 },
-            { size: "500ml", price: 450, discount: 0 },
-            { size: "750ml", price: 700, discount: 0 },
-            { size: "1L", price: 950, discount: 0 }
-          ], 
-          isTrending: true,
-          created_at: new Date() 
-        },
-        { 
-          name: "Johnnie Walker Black Label", 
-          category: "whisky", 
-          badge: "hot", 
-          image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", 
-          description: "Smooth, complex, and rich with notes of vanilla and honey", 
-          variants: [
-            { size: "750ml", price: 3500, discount: 0 },
-            { size: "1L", price: 4500, discount: 0 }
-          ], 
-          isTrending: true,
-          created_at: new Date() 
-        },
-        { 
-          name: "Jameson Irish Whiskey", 
-          category: "whisky", 
-          badge: "", 
-          image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", 
-          description: "Smooth triple-distilled Irish whiskey", 
-          variants: [
-            { size: "750ml", price: 3200, discount: 0 },
-            { size: "1L", price: 4200, discount: 0 }
-          ], 
-          isTrending: true,
-          created_at: new Date() 
-        },
-        { 
-          name: "Hennessy VS", 
-          category: "cognac", 
-          badge: "prem", 
-          image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", 
-          description: "World-renowned cognac with fruity and spicy notes", 
-          variants: [
-            { size: "750ml", price: 5500, discount: 0 },
-            { size: "1L", price: 7200, discount: 0 }
-          ], 
-          isTrending: true,
-          created_at: new Date() 
-        },
-        { 
-          name: "Smirnoff Red Vodka", 
-          category: "vodka", 
-          badge: "", 
-          image: "https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop", 
-          description: "World's best-selling vodka, triple distilled", 
-          variants: [
-            { size: "250ml", price: 550, discount: 0 },
-            { size: "500ml", price: 800, discount: 0 },
-            { size: "750ml", price: 1100, discount: 0 },
-            { size: "1L", price: 1500, discount: 0 }
-          ], 
-          isTrending: true,
-          created_at: new Date() 
-        },
-        { 
-          name: "Gilbeys Gin", 
-          category: "gin", 
-          badge: "local", 
-          image: "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop", 
-          description: "Classic London dry gin, locally bottled", 
-          variants: [
-            { size: "250ml", price: 700, discount: 0 },
-            { size: "500ml", price: 1050, discount: 0 },
-            { size: "750ml", price: 1400, discount: 0 },
-            { size: "1L", price: 1900, discount: 0 }
-          ], 
-          isTrending: true,
-          created_at: new Date() 
-        },
-        { 
-          name: "Absolut Vodka", 
-          category: "vodka", 
-          badge: "", 
-          image: "https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop", 
-          description: "Premium Swedish vodka with rich grain character", 
-          variants: [
-            { size: "750ml", price: 1800, discount: 0 },
-            { size: "1L", price: 2400, discount: 0 }
-          ], 
-          isTrending: true,
-          created_at: new Date() 
-        },
-        { 
-          name: "Kenya Cane Ginger", 
-          category: "rum", 
-          badge: "local", 
-          image: "https://images.unsplash.com/photo-1565277408825-5da2b2a4b1dd?w=300&h=300&fit=crop", 
-          description: "Locally produced sugarcane rum with ginger", 
-          variants: [
-            { size: "250ml", price: 500, discount: 0 },
-            { size: "500ml", price: 850, discount: 0 },
-            { size: "750ml", price: 1200, discount: 0 },
-            { size: "1L", price: 1600, discount: 0 }
-          ], 
-          isTrending: true,
-          created_at: new Date() 
-        },
-        { 
-          name: "Tusker Lager", 
-          category: "beer", 
-          badge: "local", 
-          image: "https://images.unsplash.com/photo-1561758033-d89a9ad46330?w=300&h=300&fit=crop", 
-          description: "Kenya's favorite premium lager", 
-          variants: [
-            { size: "500ml", price: 230, discount: 0 },
-            { size: "12pack", price: 2500, discount: 0 }
-          ], 
-          isTrending: false,
-          created_at: new Date() 
-        }
-      ]);
-      console.log('✅ 10 products seeded with multiple size variants');
+      await db.collection('products').insertMany(seedProducts);
+      console.log('✅ 10 products seeded');
     } else {
       console.log(`✅ Products already exist (${productCount} products), skipping seed`);
     }
-
     console.log('✅ Database ready');
   } catch (err) {
     console.error('MongoDB connection error:', err);
@@ -304,517 +159,331 @@ async function connectDB() {
   }
 }
 
-// ==================== HELPER FUNCTIONS ====================
+const seedProducts = [
+  { name: "Chrome Gin", category: "gin", badge: "local", image: "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop", description: "Premium Kenyan gin", variants: [{ size: "250ml", price: 600, discount: 0 }, { size: "500ml", price: 1100, discount: 0 }, { size: "750ml", price: 1650, discount: 0 }, { size: "1L", price: 2200, discount: 0 }], isTrending: true, created_at: new Date() },
+  { name: "Konyagi", category: "brandy", badge: "local", image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", description: "Tanzania's finest spirit", variants: [{ size: "250ml", price: 250, discount: 0 }, { size: "500ml", price: 450, discount: 0 }, { size: "750ml", price: 700, discount: 0 }, { size: "1L", price: 950, discount: 0 }], isTrending: true, created_at: new Date() },
+  { name: "Johnnie Walker Black Label", category: "whisky", badge: "hot", image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", description: "Smooth, complex whisky", variants: [{ size: "750ml", price: 3500, discount: 0 }, { size: "1L", price: 4500, discount: 0 }], isTrending: true, created_at: new Date() },
+  { name: "Jameson Irish Whiskey", category: "whisky", badge: "", image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", description: "Smooth triple-distilled whiskey", variants: [{ size: "750ml", price: 3200, discount: 0 }, { size: "1L", price: 4200, discount: 0 }], isTrending: true, created_at: new Date() },
+  { name: "Hennessy VS", category: "cognac", badge: "prem", image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", description: "World-renowned cognac", variants: [{ size: "750ml", price: 5500, discount: 0 }, { size: "1L", price: 7200, discount: 0 }], isTrending: true, created_at: new Date() },
+  { name: "Smirnoff Red Vodka", category: "vodka", badge: "", image: "https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop", description: "World's best-selling vodka", variants: [{ size: "250ml", price: 550, discount: 0 }, { size: "500ml", price: 800, discount: 0 }, { size: "750ml", price: 1100, discount: 0 }, { size: "1L", price: 1500, discount: 0 }], isTrending: true, created_at: new Date() },
+  { name: "Gilbeys Gin", category: "gin", badge: "local", image: "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop", description: "Classic London dry gin", variants: [{ size: "250ml", price: 700, discount: 0 }, { size: "500ml", price: 1050, discount: 0 }, { size: "750ml", price: 1400, discount: 0 }, { size: "1L", price: 1900, discount: 0 }], isTrending: true, created_at: new Date() },
+  { name: "Absolut Vodka", category: "vodka", badge: "", image: "https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop", description: "Premium Swedish vodka", variants: [{ size: "750ml", price: 1800, discount: 0 }, { size: "1L", price: 2400, discount: 0 }], isTrending: true, created_at: new Date() },
+  { name: "Kenya Cane Ginger", category: "rum", badge: "local", image: "https://images.unsplash.com/photo-1565277408825-5da2b2a4b1dd?w=300&h=300&fit=crop", description: "Locally produced sugarcane rum", variants: [{ size: "250ml", price: 500, discount: 0 }, { size: "500ml", price: 850, discount: 0 }, { size: "750ml", price: 1200, discount: 0 }, { size: "1L", price: 1600, discount: 0 }], isTrending: true, created_at: new Date() },
+  { name: "Tusker Lager", category: "beer", badge: "local", image: "https://images.unsplash.com/photo-1561758033-d89a9ad46330?w=300&h=300&fit=crop", description: "Kenya's favorite lager", variants: [{ size: "500ml", price: 230, discount: 0 }, { size: "12pack", price: 2500, discount: 0 }], isTrending: true, created_at: new Date() }
+];
+
 function escapeHtml(str) {
   if (!str) return '';
   return str.replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
 }
 
-// SVG icons inline for emails (email-safe)
-const icons = {
-  clock: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`,
-  check: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>`,
-  pin: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>`,
-  phone: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.77 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.7 2.18h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.91 9a16 16 0 0 0 6.09 6.09l1.08-.78a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>`,
-  truck: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>`,
-  bag: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>`,
-  search: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`,
-  lock: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
-  warn: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
-};
-
-// ==================== EMAIL ORDER LOOKUP ====================
-app.get('/api/orders/by-email/:email', async (req, res) => {
-  try {
-    const { email } = req.params;
-    if (!email) {
-      return res.json({ success: false, message: 'Email required' });
-    }
-    const orders = await db.collection('orders').find({ customer_email: email }).sort({ created_at: -1 }).toArray();
-    res.json({ success: true, orders });
-  } catch (err) {
-    console.error('Email order lookup error:', err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// ==================== MODERN EMAIL TEMPLATE ====================
-function generateOrderEmailHtml(orderData, isPaymentConfirmed = false) {
-  const {
-    orderId,
-    customerName,
-    items,
-    subtotal,
-    delivery,
-    total,
-    address,
-    timestamp,
-    paymentMethod,
-    phone,
-    customerEmail
-  } = orderData;
-
-  const accent = isPaymentConfirmed ? '#2ecc71' : '#e03131';
-  const accentDim = isPaymentConfirmed ? 'rgba(46,204,113,0.12)' : 'rgba(224,49,49,0.12)';
-  const accentBorder = isPaymentConfirmed ? 'rgba(46,204,113,0.25)' : 'rgba(224,49,49,0.25)';
-  const headerBg = isPaymentConfirmed ? 'linear-gradient(135deg,#071a0f 0%,#0f0f18 100%)' : 'linear-gradient(135deg,#1a0808 0%,#0f0f18 100%)';
-  const statusIcon = isPaymentConfirmed ? icons.check : icons.clock;
-  const statusLabel = isPaymentConfirmed ? 'PAYMENT CONFIRMED' : 'ORDER RECEIVED';
-  const deliveryText = delivery === 0 ? '<span style="color:#2ecc71;font-weight:800;">FREE</span>' : `<span style="color:#f0a500;font-weight:800;">KES ${delivery.toLocaleString()}</span>`;
-  const paymentLabel = paymentMethod === 'mpesa' ? 'M-PESA' : 'Cash on Delivery';
-
-  const itemsHtml = (items || []).map(item => `
-    <tr>
-      <td style="padding:13px 20px;border-bottom:1px solid #1c1c28;">
-        <div style="color:#e0e0e0;font-size:14px;font-weight:600;">${escapeHtml(item.name)}</div>
-        <div style="color:#555;font-size:12px;margin-top:3px;">${escapeHtml(item.size || '750ml')} &nbsp;·&nbsp; ×${item.qty}</div>
-       </td>
-      <td style="padding:13px 20px;text-align:right;border-bottom:1px solid #1c1c28;color:#f0a500;font-weight:800;font-size:15px;white-space:nowrap;">KES ${(item.price * item.qty).toLocaleString()}</td>
-    </tr>`).join('');
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>${isPaymentConfirmed ? '✅ Payment Confirmed' : '📦 Order Confirmed'} - LiquorBelle</title>
-</head>
-<body style="margin:0;padding:0;background:#0a0a0f;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-<div style="max-width:580px;margin:0 auto;padding:20px;">
-<div style="background:linear-gradient(160deg,#111118 0%,#0f0f17 100%);border-radius:24px;overflow:hidden;border:1px solid #1e1e2c;box-shadow:0 20px 60px rgba(0,0,0,0.6);">
-
-  <!-- TOP ACCENT BAR -->
-  <div style="height:3px;background:linear-gradient(90deg,${accent},#f0a500,${accent});"></div>
-
-  <!-- HEADER -->
-  <div style="background:${headerBg};text-align:center;padding:32px 24px 24px;border-bottom:1px solid #1a1a28;">
-    <img src="https://res.cloudinary.com/dvqjgbdhp/image/upload/v1780905905/WhatsApp_Image_2026-06-04_at_3.41.50_PM_saprsh.jpg" alt="LiquorBelle" style="width:62px;height:62px;border-radius:16px;margin-bottom:14px;box-shadow:0 8px 24px ${accentBorder};">
-    <div style="font-size:26px;font-weight:900;color:#fff;letter-spacing:-0.5px;">Liquor<span style="color:${accent};">Belle</span></div>
-    <div style="margin-top:8px;color:#666;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;">Dagoretti's Finest &nbsp;·&nbsp; 24/7 Delivery</div>
-  </div>
-
-  <!-- STATUS BADGE -->
-  <div style="text-align:center;padding:26px 24px 0;">
-    <span style="display:inline-block;background:${accentDim};color:${accent};padding:9px 22px;border-radius:50px;font-size:11px;font-weight:800;letter-spacing:1.5px;border:1px solid ${accentBorder};">
-      ${statusIcon.replace('currentColor', accent)}&nbsp; ${statusLabel}
-    </span>
-  </div>
-
-  <!-- GREETING -->
-  <div style="padding:22px 28px 0;">
-    <h2 style="color:#fff;font-size:19px;font-weight:700;margin:0 0 8px;">Hello ${escapeHtml(customerName)},</h2>
-    <p style="color:#8888a0;font-size:14px;line-height:1.65;margin:0;">
-      ${isPaymentConfirmed
-        ? '🎉 Your M-PESA payment is confirmed! Your rider is being dispatched and will reach you within 45 minutes.'
-        : '📋 Thanks for your order! Complete your M-PESA payment on your phone to confirm dispatch.'}
-    </p>
-  </div>
-
-  <!-- META CARDS -->
-  <div style="padding:18px 28px 0;">
-    <table style="width:100%;border-collapse:separate;border-spacing:8px 0;">
-      <tr>
-        <td style="background:#16161f;border:1px solid #1e1e2c;border-radius:12px;padding:12px 14px;width:33%;">
-          <div style="color:#444;font-size:10px;text-transform:uppercase;letter-spacing:0.8px;font-weight:700;margin-bottom:5px;">Order No.</div>
-          <div style="color:#f0a500;font-size:13px;font-weight:800;font-family:monospace;">${escapeHtml(orderId)}</div>
-         </td>
-        <td style="background:#16161f;border:1px solid #1e1e2c;border-radius:12px;padding:12px 14px;width:33%;">
-          <div style="color:#444;font-size:10px;text-transform:uppercase;letter-spacing:0.8px;font-weight:700;margin-bottom:5px;">Date</div>
-          <div style="color:#ccc;font-size:12px;font-weight:700;">${escapeHtml(timestamp)}</div>
-         </td>
-        <td style="background:#16161f;border:1px solid #1e1e2c;border-radius:12px;padding:12px 14px;width:33%;">
-          <div style="color:#444;font-size:10px;text-transform:uppercase;letter-spacing:0.8px;font-weight:700;margin-bottom:5px;">Payment</div>
-          <div style="color:#4cd137;font-size:12px;font-weight:800;">${escapeHtml(paymentLabel)}</div>
-         </td>
-      </tr>
-    </table>
-  </div>
-
-  <!-- ORDER SUMMARY -->
-  <div style="margin:22px 28px 0;">
-    <div style="background:#16161f;border:1px solid #1e1e2c;border-radius:18px;overflow:hidden;">
-      <div style="background:#1a1a26;padding:13px 20px;border-bottom:1px solid #1e1e2c;">
-        <span style="color:#f0a500;font-weight:800;font-size:13px;letter-spacing:0.5px;">${icons.bag.replace('currentColor','#f0a500')}&nbsp; ORDER ITEMS</span>
-      </div>
-      <table style="width:100%;border-collapse:collapse;">
-        <tbody>${itemsHtml}</tbody>
-      </table>
-      <div style="padding:10px 20px 4px;border-top:1px solid #1e1e2c;">
-        <table style="width:100%;border-collapse:collapse;">
-          <tr><td style="padding:8px 0;color:#777;font-size:14px;">Subtotal</td><td style="padding:8px 0;text-align:right;color:#ccc;font-size:14px;font-weight:700;">KES ${subtotal.toLocaleString()}</td></tr>
-          <tr><td style="padding:8px 0 12px;color:#777;font-size:14px;border-bottom:1px solid #1c1c28;">Delivery Fee</td><td style="padding:8px 0 12px;text-align:right;border-bottom:1px solid #1c1c28;font-size:14px;">${deliveryText}</td></tr>
-        </table>
-      </div>
-      <div style="margin:12px 14px 14px;background:${isPaymentConfirmed ? '#0a1a0a' : '#1a0808'};border-radius:14px;padding:16px 18px;border:1px solid ${accentBorder};">
-        <table style="width:100%;border-collapse:collapse;">
-          <tr><td style="color:#fff;font-size:17px;font-weight:800;">TOTAL</td><td style="text-align:right;color:#e03131;font-size:22px;font-weight:900;">KES ${total.toLocaleString()}</td></tr>
-        </table>
-      </div>
-    </div>
-  </div>
-
-  <!-- DELIVERY ADDRESS -->
-  <div style="margin:16px 28px 0;">
-    <div style="background:#16161f;border:1px solid #1e1e2c;border-radius:18px;padding:18px 20px;">
-      <div style="margin-bottom:10px;">
-        <span style="color:${accent};font-weight:800;font-size:11px;letter-spacing:1px;text-transform:uppercase;">${icons.pin.replace('currentColor', accent)}&nbsp; DELIVERY ADDRESS</span>
-      </div>
-      <div style="color:#ddd;font-size:14px;line-height:1.6;margin-bottom:10px;">${escapeHtml(address)}</div>
-      <div style="color:#666;font-size:13px;">${icons.phone.replace('currentColor','#555')}&nbsp; ${escapeHtml(phone || 'Provided at checkout')}</div>
-    </div>
-  </div>
-
-  <!-- STATUS BANNER -->
-  <div style="margin:16px 28px 0;">
-    <div style="background:${accentDim};border:1px solid ${accentBorder};border-radius:18px;padding:20px;text-align:center;">
-      <div style="margin-bottom:8px;">${isPaymentConfirmed ? icons.truck.replace('currentColor', accent) : icons.clock.replace('currentColor', accent)}</div>
-      <div style="color:${accent};font-weight:800;font-size:15px;margin-bottom:6px;">
-        ${isPaymentConfirmed ? 'Rider Dispatched — On the way!' : 'Awaiting M-PESA Confirmation'}
-      </div>
-      <div style="color:#666;font-size:13px;line-height:1.5;">
-        ${isPaymentConfirmed
-          ? `Rider will call ${escapeHtml(phone || 'your number')} when nearby. Share live location on WhatsApp for fastest delivery.`
-          : 'Check your phone for the M-PESA STK push prompt and complete payment.'}
-      </div>
-    </div>
-  </div>
-
-  <!-- CTA BUTTON -->
-  <div style="padding:20px 28px 24px;text-align:center;">
-    <a href="https://teemoreg.github.io/liquorbelle/track-orders.html?email=${encodeURIComponent(customerEmail || '')}"
-       style="display:inline-block;background:linear-gradient(135deg,#e03131,#b71c1c);color:#fff;text-decoration:none;padding:14px 36px;border-radius:50px;font-weight:800;font-size:15px;box-shadow:0 8px 24px rgba(224,49,49,0.3);letter-spacing:0.3px;">
-      ${icons.search.replace('currentColor','white')}&nbsp; Track Your Order
-    </a>
-  </div>
-
-  <!-- FOOTER -->
-  <div style="background:#0d0d14;border-top:1px solid #18181f;padding:18px 28px;text-align:center;">
-    <div style="margin-bottom:10px;color:#3a3a50;font-size:11px;">
-      ${icons.phone.replace('currentColor','#3a3a50')}&nbsp; +254 748 894 443
-      &nbsp;&nbsp;·&nbsp;&nbsp;
-      WhatsApp 24/7
-    </div>
-    <div style="color:#2a2a3a;font-size:10px;margin-bottom:6px;">
-      ${icons.warn.replace('currentColor','#2a2a3a')}&nbsp; You must be 18+ to purchase alcohol. Drink responsibly.
-    </div>
-    <div style="color:#1e1e28;font-size:9px;">LiquorBelle — Dagoretti Road, Opposite Quickmart</div>
-  </div>
-
-</div>
-</div>
-</body>
-</html>`;
-}
-
-// ==================== OTP EMAIL TEMPLATE ====================
-function generateOtpEmailHtml(otp) {
-  const digits = String(otp).split('');
-  const boxes = digits.map(d => `<td style="padding:0 4px;"><div style="width:42px;height:54px;background:#16161f;border:1px solid #2a2a3c;border-radius:12px;text-align:center;line-height:54px;font-size:24px;font-weight:900;color:#f0a500;font-family:monospace;">${d}</div></td>`).join('');
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Verification Code - LiquorBelle</title>
-</head>
-<body style="margin:0;padding:0;background:#0a0a0f;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-<div style="max-width:480px;margin:0 auto;padding:20px;">
-<div style="background:linear-gradient(160deg,#111118 0%,#0f0f17 100%);border-radius:24px;overflow:hidden;border:1px solid #1e1e2c;box-shadow:0 20px 60px rgba(0,0,0,0.6);">
-
-  <!-- TOP ACCENT BAR -->
-  <div style="height:3px;background:linear-gradient(90deg,#e03131,#f0a500,#e03131);"></div>
-
-  <!-- HEADER -->
-  <div style="background:linear-gradient(135deg,#1a0808 0%,#0f0f18 100%);text-align:center;padding:30px 24px 22px;border-bottom:1px solid #1a1a28;">
-    <img src="https://res.cloudinary.com/dvqjgbdhp/image/upload/v1780905905/WhatsApp_Image_2026-06-04_at_3.41.50_PM_saprsh.jpg" alt="LiquorBelle" style="width:56px;height:56px;border-radius:14px;margin-bottom:12px;box-shadow:0 6px 20px rgba(224,49,49,0.25);">
-    <div style="font-size:23px;font-weight:900;color:#fff;letter-spacing:-0.5px;">Liquor<span style="color:#e03131;">Belle</span></div>
-    <div style="margin-top:6px;color:#555;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;">Dagoretti's Finest &nbsp;·&nbsp; 24/7 Delivery</div>
-  </div>
-
-  <!-- LOCK ICON + HEADING -->
-  <div style="padding:28px 24px 0;text-align:center;">
-    <div style="display:inline-block;background:rgba(224,49,49,0.08);border:1px solid rgba(224,49,49,0.2);border-radius:16px;padding:14px;margin-bottom:14px;">
-      ${icons.lock.replace('currentColor','#e03131')}
-    </div>
-    <h2 style="color:#fff;font-size:19px;font-weight:800;margin:0 0 8px;">Verify Your Identity</h2>
-    <p style="color:#666;font-size:13px;line-height:1.6;margin:0;">Enter this code in the app. It expires in <strong style="color:#f0a500;">10 minutes</strong>.</p>
-  </div>
-
-  <!-- OTP DIGIT BOXES -->
-  <div style="margin:24px 24px 0;background:#0f0f18;border:1px solid #1e1e2c;border-radius:18px;padding:26px 20px;text-align:center;">
-    <div style="color:#444;font-size:10px;text-transform:uppercase;letter-spacing:2px;font-weight:700;margin-bottom:16px;">Your One-Time Code</div>
-    <table style="margin:0 auto;border-collapse:separate;border-spacing:0;">
-      <tr>${boxes}</tr>
-    </table>
-    <div style="margin-top:16px;color:#555;font-size:12px;">
-      ${icons.clock.replace('currentColor','#555')}&nbsp; Expires in <strong style="color:#f0a500;">10 minutes</strong>
-    </div>
-  </div>
-
-  <!-- WARNING -->
-  <div style="margin:14px 24px 0;">
-    <div style="background:rgba(240,165,0,0.05);border:1px solid rgba(240,165,0,0.12);border-radius:12px;padding:13px 16px;">
-      <span style="color:#f0a500;font-size:11px;">${icons.warn.replace('currentColor','#f0a500')}</span>
-      <span style="color:#555;font-size:12px;"> Never share this code. LiquorBelle staff will never ask for it.</span>
-    </div>
-  </div>
-
-  <!-- FOOTER -->
-  <div style="background:#0d0d14;border-top:1px solid #18181f;margin-top:24px;padding:16px 24px;text-align:center;">
-    <div style="color:#1e1e28;font-size:10px;">LiquorBelle &nbsp;·&nbsp; Dagoretti's Finest &nbsp;·&nbsp; 18+ only</div>
-  </div>
-
-</div>
-</div>
-</body>
-</html>`;
-}
-
-// ==================== SEND ORDER PAID EMAIL ====================
 const BREVO_API_KEY = process.env.BREVO_API_KEY;
 
-async function sendOrderPaidEmail(orderId, email, customerName, orderNumber, total, address, items, subtotal, delivery, phone, timestamp) {
+// ==================== EMAIL 1: COD - ORDER RECEIVED (RIDER ON THE WAY) ====================
+async function sendCodOrderReceivedEmail(orderData) {
   if (!BREVO_API_KEY) return;
-  const html = generateOrderEmailHtml({
-    orderId: orderNumber,
-    customerName,
-    items: items || [],
-    subtotal: subtotal || 0,
-    delivery: delivery || 0,
-    total,
-    address,
-    timestamp: timestamp || new Date().toLocaleString('en-KE', { hour12: true, hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' }),
-    paymentMethod: 'mpesa',
-    phone: phone || '',
-    customerEmail: email
-  }, true);
+  const { orderId, customerName, items, subtotal, delivery, total, address, phone, customerEmail } = orderData;
+  const deliveryText = delivery === 0 ? 'FREE' : `KES ${delivery.toLocaleString()}`;
+  
+  const itemsHtml = (items || []).map(item => `
+    <tr style="border-bottom:1px solid #1c1c28;">
+      <td style="padding:12px 0;"><span style="color:#e0e0e0;">${escapeHtml(item.name)} x${item.qty}</span><br><span style="color:#555;font-size:11px;">${escapeHtml(item.size || '750ml')}</span></td>
+      <td style="padding:12px 0;text-align:right;color:#f0a500;">KES ${(item.price * item.qty).toLocaleString()}</td>
+    </tr>
+  `).join('');
+
+  const html = `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Order Received - LiquorBelle</title></head>
+<body style="margin:0;padding:0;background:#0a0a0f;font-family:Arial,sans-serif;">
+<div style="max-width:580px;margin:0 auto;padding:20px;">
+<div style="background:#111118;border-radius:24px;overflow:hidden;border:1px solid #1e1e2c;">
+  <div style="height:3px;background:linear-gradient(90deg,#f0a500,#e03131,#f0a500);"></div>
+  <div style="background:#1a0808;text-align:center;padding:32px 24px;">
+    <img src="https://res.cloudinary.com/dvqjgbdhp/image/upload/v1780905905/WhatsApp_Image_2026-06-04_at_3.41.50_PM_saprsh.jpg" alt="LiquorBelle" style="width:60px;border-radius:16px;margin-bottom:12px;">
+    <div style="font-size:26px;font-weight:900;color:#fff;">Liquor<span style="color:#f0a500;">Belle</span></div>
+    <div style="color:#666;font-size:11px;">Dagoretti's Finest · 24/7 Delivery</div>
+  </div>
+  <div style="text-align:center;padding:20px 24px 0;">
+    <span style="background:rgba(240,165,0,0.12);color:#f0a500;padding:8px 20px;border-radius:50px;font-size:11px;font-weight:800;">📋 ORDER RECEIVED - RIDER ON THE WAY</span>
+  </div>
+  <div style="padding:20px 28px;">
+    <h2 style="color:#fff;font-size:18px;">Hello ${escapeHtml(customerName)},</h2>
+    <p style="color:#888;font-size:14px;">🎉 Your order has been received! Our rider is on the way to deliver your drinks.</p>
+    <p style="color:#888;font-size:14px;margin-top:12px;">📞 The rider will call <strong style="color:#f0a500;">${escapeHtml(phone)}</strong> when approaching your location.</p>
+    <p style="color:#ff6b6b;font-size:14px;font-weight:700;">💰 Please have the exact cash ready upon delivery.</p>
+  </div>
+  <div style="padding:0 28px;">
+    <table style="width:100%;background:#16161f;border-radius:16px;overflow:hidden;">
+      <tr style="background:#1a1a26;"><td colspan="2" style="padding:12px 16px;color:#f0a500;font-weight:800;">🍾 ORDER ITEMS</td></tr>
+      ${itemsHtml}
+      <tr><td style="padding:12px 16px;color:#777;">Subtotal</td><td style="padding:12px 16px;text-align:right;color:#ccc;">KES ${subtotal.toLocaleString()}</td></tr>
+      <tr><td style="padding:12px 16px;color:#777;">Delivery Fee</td><td style="padding:12px 16px;text-align:right;color:#ccc;">${deliveryText}</td></tr>
+      <tr style="background:#1a0808;"><td style="padding:16px;color:#fff;font-weight:800;">TOTAL TO PAY</td><td style="padding:16px;text-align:right;color:#f0a500;font-size:20px;font-weight:800;">KES ${total.toLocaleString()}</td></tr>
+    </table>
+  </div>
+  <div style="margin:20px 28px;background:#16161f;border-radius:16px;padding:16px;">
+    <div style="color:#f0a500;">📍 DELIVERY ADDRESS</div>
+    <div style="color:#ddd;">${escapeHtml(address)}</div>
+    <div style="color:#666;margin-top:8px;">📞 ${escapeHtml(phone)}</div>
+  </div>
+  <div style="margin:0 28px 20px;background:rgba(240,165,0,0.08);border-radius:16px;padding:16px;text-align:center;">
+    <div style="font-size:28px;">🏍️</div>
+    <div style="color:#f0a500;font-weight:800;">Estimated Delivery: 30-45 minutes</div>
+    <div style="color:#666;">Rider will call before arrival</div>
+  </div>
+  <div style="padding:20px 28px;text-align:center;">
+    <a href="https://teemoreg.github.io/liquorbelle/track-orders.html?email=${encodeURIComponent(customerEmail)}" style="background:#e03131;color:#fff;padding:12px 32px;border-radius:50px;text-decoration:none;font-weight:800;">🔍 Track Order</a>
+  </div>
+  <div style="background:#0d0d14;text-align:center;padding:16px;color:#444;">📞 +254 748 894 443 · WhatsApp 24/7</div>
+</div>
+</div>
+</body>
+</html>`;
+
   try {
     await axios.post('https://api.brevo.com/v3/smtp/email', {
       sender: { name: 'LiquorBelle', email: 'timblax0@gmail.com' },
-      to: [{ email }],
-      subject: `✅ Payment Confirmed - Order ${orderNumber} - LiquorBelle`,
+      to: [{ email: customerEmail }],
+      subject: `📦 Order Received - ${orderId} - LiquorBelle`,
       htmlContent: html
-    }, { headers: { 'api-key': BREVO_API_KEY, 'Content-Type': 'application/json' } });
-    console.log(`📧 Payment confirmation email sent to ${email}`);
-  } catch (err) {
-    console.error('❌ Payment email error:', err.response?.data || err.message);
-  }
+    }, { headers: { 'api-key': BREVO_API_KEY } });
+    console.log(`📧 COD order received email sent to ${customerEmail}`);
+  } catch (err) { console.error('Email error:', err.message); }
 }
 
-// ==================== ADMIN LOGIN (JWT with role) ====================
+// ==================== EMAIL 2: M-PESA - PAYMENT RECEIVED (ORDER ON THE WAY) ====================
+async function sendMpesaOrderReceivedEmail(orderData) {
+  if (!BREVO_API_KEY) return;
+  const { orderId, customerName, items, subtotal, delivery, total, address, phone, customerEmail } = orderData;
+  const deliveryText = delivery === 0 ? 'FREE' : `KES ${delivery.toLocaleString()}`;
+  
+  const itemsHtml = (items || []).map(item => `
+    <tr style="border-bottom:1px solid #1c1c28;">
+      <td style="padding:12px 0;"><span style="color:#e0e0e0;">${escapeHtml(item.name)} x${item.qty}</span><br><span style="color:#555;font-size:11px;">${escapeHtml(item.size || '750ml')}</span></td>
+      <td style="padding:12px 0;text-align:right;color:#f0a500;">KES ${(item.price * item.qty).toLocaleString()}</td>
+    </tr>
+  `).join('');
+
+  const html = `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Payment Received - LiquorBelle</title></head>
+<body style="margin:0;padding:0;background:#0a0a0f;font-family:Arial,sans-serif;">
+<div style="max-width:580px;margin:0 auto;padding:20px;">
+<div style="background:#111118;border-radius:24px;overflow:hidden;border:1px solid #1e1e2c;">
+  <div style="height:3px;background:linear-gradient(90deg,#2ecc71,#f0a500,#2ecc71);"></div>
+  <div style="background:#071a0f;text-align:center;padding:32px 24px;">
+    <img src="https://res.cloudinary.com/dvqjgbdhp/image/upload/v1780905905/WhatsApp_Image_2026-06-04_at_3.41.50_PM_saprsh.jpg" alt="LiquorBelle" style="width:60px;border-radius:16px;margin-bottom:12px;">
+    <div style="font-size:26px;font-weight:900;color:#fff;">Liquor<span style="color:#2ecc71;">Belle</span></div>
+    <div style="color:#666;font-size:11px;">Dagoretti's Finest · 24/7 Delivery</div>
+  </div>
+  <div style="text-align:center;padding:20px 24px 0;">
+    <span style="background:rgba(46,204,113,0.12);color:#2ecc71;padding:8px 20px;border-radius:50px;font-size:11px;font-weight:800;">✅ PAYMENT RECEIVED - ORDER ON THE WAY</span>
+  </div>
+  <div style="padding:20px 28px;">
+    <h2 style="color:#fff;font-size:18px;">Hello ${escapeHtml(customerName)},</h2>
+    <p style="color:#888;font-size:14px;">🎉 Your M-PESA payment of <strong style="color:#2ecc71;">KES ${total.toLocaleString()}</strong> has been received!</p>
+    <p style="color:#888;font-size:14px;margin-top:12px;">🚚 Your order is now being prepared. Our rider is on the way to deliver your drinks.</p>
+    <p style="color:#888;font-size:14px;">📞 The rider will call <strong style="color:#f0a500;">${escapeHtml(phone)}</strong> when approaching your location.</p>
+  </div>
+  <div style="padding:0 28px;">
+    <table style="width:100%;background:#16161f;border-radius:16px;overflow:hidden;">
+      <tr style="background:#1a1a26;"><td colspan="2" style="padding:12px 16px;color:#f0a500;font-weight:800;">🍾 ORDER ITEMS</td></tr>
+      ${itemsHtml}
+      <tr><td style="padding:12px 16px;color:#777;">Subtotal</td><td style="padding:12px 16px;text-align:right;color:#ccc;">KES ${subtotal.toLocaleString()}</td></tr>
+      <tr><td style="padding:12px 16px;color:#777;">Delivery Fee</td><td style="padding:12px 16px;text-align:right;color:#ccc;">${deliveryText}</td></tr>
+      <tr style="background:#0a1a0a;"><td style="padding:16px;color:#fff;font-weight:800;">TOTAL PAID</td><td style="padding:16px;text-align:right;color:#2ecc71;font-size:20px;font-weight:800;">KES ${total.toLocaleString()}</td></tr>
+    </table>
+  </div>
+  <div style="margin:20px 28px;background:#16161f;border-radius:16px;padding:16px;">
+    <div style="color:#2ecc71;">📍 DELIVERY ADDRESS</div>
+    <div style="color:#ddd;">${escapeHtml(address)}</div>
+    <div style="color:#666;margin-top:8px;">📞 ${escapeHtml(phone)}</div>
+  </div>
+  <div style="margin:0 28px 20px;background:rgba(46,204,113,0.08);border-radius:16px;padding:16px;text-align:center;">
+    <div style="font-size:28px;">🏍️</div>
+    <div style="color:#2ecc71;font-weight:800;">Estimated Delivery: 30-45 minutes</div>
+    <div style="color:#666;">Rider will call before arrival</div>
+  </div>
+  <div style="padding:20px 28px;text-align:center;">
+    <a href="https://teemoreg.github.io/liquorbelle/track-orders.html?email=${encodeURIComponent(customerEmail)}" style="background:#e03131;color:#fff;padding:12px 32px;border-radius:50px;text-decoration:none;font-weight:800;">🔍 Track Order</a>
+  </div>
+  <div style="background:#0d0d14;text-align:center;padding:16px;color:#444;">📞 +254 748 894 443 · WhatsApp 24/7</div>
+</div>
+</div>
+</body>
+</html>`;
+
+  try {
+    await axios.post('https://api.brevo.com/v3/smtp/email', {
+      sender: { name: 'LiquorBelle', email: 'timblax0@gmail.com' },
+      to: [{ email: customerEmail }],
+      subject: `✅ Order Received - ${orderId} - LiquorBelle`,
+      htmlContent: html
+    }, { headers: { 'api-key': BREVO_API_KEY } });
+    console.log(`📧 M-PESA order received email sent to ${customerEmail}`);
+  } catch (err) { console.error('Email error:', err.message); }
+}
+
+// ==================== EMAIL 3: ORDER DELIVERED SUCCESSFULLY (Both COD & M-PESA) ====================
+async function sendOrderDeliveredEmail(orderData) {
+  if (!BREVO_API_KEY) return;
+  const { orderId, customerName, items, total, phone, customerEmail } = orderData;
+  
+  const itemsHtml = (items || []).map(item => `
+    <tr><td style="padding:6px 0;color:#ddd;">${escapeHtml(item.name)} x${item.qty}</td><td style="text-align:right;color:#2ecc71;">KES ${(item.price * item.qty).toLocaleString()}</td></tr>
+  `).join('');
+
+  const html = `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Order Delivered - LiquorBelle</title></head>
+<body style="margin:0;padding:0;background:#0a0a0f;font-family:Arial,sans-serif;">
+<div style="max-width:580px;margin:0 auto;padding:20px;">
+<div style="background:#111118;border-radius:24px;overflow:hidden;border:1px solid #1e1e2c;">
+  <div style="height:3px;background:linear-gradient(90deg,#2ecc71,#f0a500,#2ecc71);"></div>
+  <div style="background:#071a0f;text-align:center;padding:32px 24px;">
+    <img src="https://res.cloudinary.com/dvqjgbdhp/image/upload/v1780905905/WhatsApp_Image_2026-06-04_at_3.41.50_PM_saprsh.jpg" alt="LiquorBelle" style="width:60px;border-radius:16px;margin-bottom:12px;">
+    <div style="font-size:26px;font-weight:900;color:#fff;">Liquor<span style="color:#2ecc71;">Belle</span></div>
+  </div>
+  <div style="text-align:center;padding:20px 24px 0;">
+    <span style="background:rgba(46,204,113,0.12);color:#2ecc71;padding:8px 20px;border-radius:50px;font-size:11px;font-weight:800;">✅ ORDER DELIVERED SUCCESSFULLY</span>
+  </div>
+  <div style="padding:20px 28px;">
+    <h2 style="color:#fff;font-size:18px;">Hello ${escapeHtml(customerName)},</h2>
+    <p style="color:#888;font-size:14px;">🎉 Your order has been successfully delivered! Thank you for choosing LiquorBelle.</p>
+    <p style="color:#888;font-size:14px;margin-top:12px;">🍻 We hope you enjoy your drinks. Please don't forget to drink responsibly.</p>
+  </div>
+  <div style="margin:0 28px;background:#16161f;border-radius:16px;padding:16px;">
+    <div style="color:#2ecc71;">📦 ORDER #${escapeHtml(orderId)}</div>
+    <table style="width:100%;margin-top:12px;">${itemsHtml}</table>
+    <div style="margin-top:12px;padding-top:12px;border-top:1px solid #1e1e2c;text-align:right;"><span style="color:#2ecc71;font-size:18px;font-weight:800;">Total: KES ${total.toLocaleString()}</span></div>
+  </div>
+  <div style="padding:20px 28px;text-align:center;">
+    <a href="https://teemoreg.github.io/liquorbelle/shop.html" style="background:#2ecc71;color:#fff;padding:12px 32px;border-radius:50px;text-decoration:none;font-weight:800;">🛒 Shop Again</a>
+  </div>
+  <div style="background:#0d0d14;text-align:center;padding:16px;color:#444;">📞 +254 748 894 443 · WhatsApp 24/7</div>
+</div>
+</div>
+</body>
+</html>`;
+
+  try {
+    await axios.post('https://api.brevo.com/v3/smtp/email', {
+      sender: { name: 'LiquorBelle', email: 'timblax0@gmail.com' },
+      to: [{ email: customerEmail }],
+      subject: `✅ Order Delivered - ${orderId} - LiquorBelle`,
+      htmlContent: html
+    }, { headers: { 'api-key': BREVO_API_KEY } });
+    console.log(`📧 Order delivered email sent to ${customerEmail}`);
+  } catch (err) { console.error('Email error:', err.message); }
+}
+
+// ==================== ADMIN LOGIN ====================
 app.post('/api/admin/login', async (req, res) => {
   const { password } = req.body;
   if (password === ADMIN_PASSWORD) {
-    const token = jwt.sign({ role: 'admin', type: 'admin' }, JWT_SECRET, { expiresIn: '1d' });
+    const token = jwt.sign({ role: 'admin' }, JWT_SECRET, { expiresIn: '1d' });
     return res.json({ success: true, token, role: 'admin' });
   }
   if (password === CASHIER_PASSWORD) {
-    const token = jwt.sign({ role: 'cashier', type: 'cashier' }, JWT_SECRET, { expiresIn: '1d' });
+    const token = jwt.sign({ role: 'cashier' }, JWT_SECRET, { expiresIn: '1d' });
     return res.json({ success: true, token, role: 'cashier' });
   }
   res.status(401).json({ success: false, message: 'Invalid password' });
 });
 
-// ==================== USER AUTHENTICATION ENDPOINTS ====================
-
-// Register new user
+// ==================== USER AUTH ====================
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, phone, email, password } = req.body;
-    if (!name || !phone || !email || !password) {
-      return res.status(400).json({ success: false, message: 'All fields are required' });
-    }
-    if (!email.includes('@')) {
-      return res.status(400).json({ success: false, message: 'Valid email required' });
-    }
-    if (password.length < 6) {
-      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
-    }
+    if (!name || !phone || !email || !password) return res.status(400).json({ success: false, message: 'All fields required' });
+    if (!email.includes('@')) return res.status(400).json({ success: false, message: 'Valid email required' });
+    if (password.length < 6) return res.status(400).json({ success: false, message: 'Password min 6 characters' });
 
-    const existingUser = await db.collection('users').findOne({ email: email.toLowerCase() });
-    if (existingUser) {
-      return res.status(400).json({ success: false, message: 'User already exists with this email' });
-    }
+    const existing = await db.collection('users').findOne({ email: email.toLowerCase() });
+    if (existing) return res.status(400).json({ success: false, message: 'Email already registered' });
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-    const user = {
-      name,
-      phone,
-      email: email.toLowerCase(),
-      password: hashedPassword,
-      role: 'user',
-      created_at: new Date(),
-      updated_at: new Date()
-    };
+    const hashed = await bcrypt.hash(password, 10);
+    const user = { name, phone, email: email.toLowerCase(), password: hashed, role: 'user', created_at: new Date() };
     const result = await db.collection('users').insertOne(user);
-
-    const token = jwt.sign(
-      { id: result.insertedId, email: user.email, name: user.name, role: 'user' },
-      JWT_SECRET,
-      { expiresIn: JWT_EXPIRY }
-    );
+    const token = jwt.sign({ id: result.insertedId, email: user.email, name: user.name, role: 'user' }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
     const { password: _, ...userWithoutPassword } = user;
-    userWithoutPassword._id = result.insertedId;
-    res.json({
-      success: true,
-      message: 'Account created successfully',
-      user: userWithoutPassword,
-      token
-    });
-  } catch (err) {
-    console.error('Registration error:', err);
-    res.status(500).json({ success: false, message: 'Registration failed' });
-  }
+    res.json({ success: true, user: userWithoutPassword, token });
+  } catch (err) { res.status(500).json({ success: false, message: 'Registration failed' }); }
 });
 
-// Login user
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ success: false, message: 'Email and password required' });
-    }
+    if (!email || !password) return res.status(400).json({ success: false, message: 'Email and password required' });
 
     const user = await db.collection('users').findOne({ email: email.toLowerCase() });
-    if (!user) {
-      return res.status(401).json({ success: false, message: 'Invalid email or password' });
-    }
+    if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(401).json({ success: false, message: 'Invalid email or password' });
-    }
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
-    const token = jwt.sign(
-      { id: user._id, email: user.email, name: user.name, role: 'user' },
-      JWT_SECRET,
-      { expiresIn: JWT_EXPIRY }
-    );
+    const token = jwt.sign({ id: user._id, email: user.email, name: user.name, role: 'user' }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
     const { password: _, ...userWithoutPassword } = user;
-    res.json({
-      success: true,
-      message: 'Login successful',
-      user: userWithoutPassword,
-      token
-    });
-  } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ success: false, message: 'Login failed' });
-  }
+    res.json({ success: true, user: userWithoutPassword, token });
+  } catch (err) { res.status(500).json({ success: false, message: 'Login failed' }); }
 });
 
-// Verify token
 app.get('/api/auth/verify', authenticateToken, async (req, res) => {
-  try {
-    const user = await db.collection('users').findOne(
-      { _id: new ObjectId(req.user.id) },
-      { projection: { password: 0 } }
-    );
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-    res.json({ success: true, user });
-  } catch (err) {
-    res.status(500).json({ success: false, message: 'Token verification failed' });
-  }
+  const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) }, { projection: { password: 0 } });
+  res.json({ success: true, user });
 });
 
-// Delete user account
 app.delete('/api/auth/delete', authenticateToken, async (req, res) => {
-  try {
-    const { password } = req.body;
-    if (!password) {
-      return res.status(400).json({ success: false, message: 'Password required' });
-    }
-
-    const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(401).json({ success: false, message: 'Incorrect password' });
-    }
-
-    await db.collection('users').deleteOne({ _id: user._id });
-    res.json({ success: true, message: 'Account deleted successfully' });
-  } catch (err) {
-    console.error('Account deletion error:', err);
-    res.status(500).json({ success: false, message: 'Failed to delete account' });
-  }
+  const { password } = req.body;
+  if (!password) return res.status(400).json({ success: false, message: 'Password required' });
+  const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
+  if (!user) return res.status(404).json({ success: false });
+  const match = await bcrypt.compare(password, user.password);
+  if (!match) return res.status(401).json({ success: false, message: 'Incorrect password' });
+  await db.collection('users').deleteOne({ _id: user._id });
+  res.json({ success: true });
 });
 
-// Get user profile
 app.get('/api/auth/profile', authenticateToken, async (req, res) => {
-  try {
-    const user = await db.collection('users').findOne(
-      { _id: new ObjectId(req.user.id) },
-      { projection: { password: 0 } }
-    );
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-    res.json({ success: true, user });
-  } catch (err) {
-    console.error('Get profile error:', err);
-    res.status(500).json({ success: false, message: 'Failed to get profile' });
-  }
+  const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) }, { projection: { password: 0 } });
+  res.json({ success: true, user });
 });
 
-// Update user profile
 app.put('/api/auth/profile', authenticateToken, async (req, res) => {
-  try {
-    const { name, phone } = req.body;
-    const updateData = {};
-    if (name) updateData.name = name;
-    if (phone) updateData.phone = phone;
-    updateData.updated_at = new Date();
-
-    await db.collection('users').updateOne(
-      { _id: new ObjectId(req.user.id) },
-      { $set: updateData }
-    );
-
-    const updatedUser = await db.collection('users').findOne(
-      { _id: new ObjectId(req.user.id) },
-      { projection: { password: 0 } }
-    );
-    const token = jwt.sign(
-      { id: updatedUser._id, email: updatedUser.email, name: updatedUser.name, role: 'user' },
-      JWT_SECRET,
-      { expiresIn: JWT_EXPIRY }
-    );
-    res.json({ success: true, user: updatedUser, token });
-  } catch (err) {
-    console.error('Update profile error:', err);
-    res.status(500).json({ success: false, message: 'Failed to update profile' });
-  }
+  const { name, phone } = req.body;
+  const update = {};
+  if (name) update.name = name;
+  if (phone) update.phone = phone;
+  update.updated_at = new Date();
+  await db.collection('users').updateOne({ _id: new ObjectId(req.user.id) }, { $set: update });
+  const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) }, { projection: { password: 0 } });
+  const token = jwt.sign({ id: user._id, email: user.email, name: user.name, role: 'user' }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+  res.json({ success: true, user, token });
 });
 
-// Get user's own orders
 app.get('/api/auth/orders', authenticateToken, async (req, res) => {
+  const orders = await db.collection('orders').find({ customer_email: req.user.email }).sort({ created_at: -1 }).toArray();
+  res.json({ success: true, orders });
+});
+
+// ==================== PUBLIC ORDER TRACKING ====================
+app.get('/api/orders/track', async (req, res) => {
   try {
-    const orders = await db.collection('orders')
-      .find({ customer_email: req.user.email })
-      .sort({ created_at: -1 })
-      .toArray();
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ success: false, message: 'Email required' });
+    const orders = await db.collection('orders').find({ customer_email: email.toLowerCase() }).sort({ created_at: -1 }).toArray();
     res.json({ success: true, orders });
   } catch (err) {
-    console.error('Get user orders error:', err);
-    res.status(500).json({ success: false, message: 'Failed to get orders' });
+    res.status(500).json({ success: false, message: 'Failed to fetch orders' });
   }
 });
 
-// ==================== SAFARICOM DARAJA CREDENTIALS ====================
+// ==================== M-PESA ====================
 const CONSUMER_KEY = process.env.CONSUMER_KEY || 'YOUR_CONSUMER_KEY';
 const CONSUMER_SECRET = process.env.CONSUMER_SECRET || 'YOUR_CONSUMER_SECRET';
 const PASSKEY = process.env.PASSKEY;
 const SHORTCODE = process.env.SHORTCODE || '174379';
-const BUSINESS_NUMBER = '254748894443';
-
 const baseURL = 'https://sandbox.safaricom.co.ke';
 
 let accessToken = null;
@@ -838,576 +507,214 @@ function formatPhone(phone) {
   return cleaned;
 }
 
-const pendingOrders = new Map();
+app.post('/api/stkpush', stkLimiter, async (req, res) => {
+  const { phone, orderId, customerName, address, items, subtotal, delivery, total, customerEmail } = req.body;
+  const formattedPhone = formatPhone(phone);
+  const timestamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+  const password = Buffer.from(`${SHORTCODE}${PASSKEY}${timestamp}`).toString('base64');
+  const token = await getAccessToken();
 
-// ==================== STK PUSH ENDPOINT ====================
-app.post('/api/stkpush',
-  stkLimiter,
-  body('phone').optional().isString(),
-  body('amount').isNumeric(),
-  body('total').isNumeric(),
-  body('orderId').notEmpty(),
-  body('customerName').notEmpty(),
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, message: 'Invalid request data', errors: errors.array() });
-    }
+  await axios.post(`${baseURL}/mpesa/stkpush/v1/processrequest`, {
+    BusinessShortCode: SHORTCODE, Password: password, Timestamp: timestamp,
+    TransactionType: 'CustomerPayBillOnline', Amount: Math.round(total),
+    PartyA: formattedPhone, PartyB: SHORTCODE, PhoneNumber: formattedPhone,
+    CallBackURL: `https://liquorbelle-mpesa-backend.onrender.com/api/callback`,
+    AccountReference: orderId, TransactionDesc: `LiquorBelle Order ${orderId}`
+  }, { headers: { Authorization: `Bearer ${token}` } });
 
-    try {
-      const { phone, amount, orderId, customerName, address, items, subtotal, delivery, total } = req.body;
-      const formattedPhone = formatPhone(phone);
-      const timestamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
-      const password = Buffer.from(`${SHORTCODE}${PASSKEY}${timestamp}`).toString('base64');
-      const token = await getAccessToken();
+  await db.collection('pending_orders').insertOne({ orderId, customerName, phone: formattedPhone, address, items, subtotal, delivery, total, customerEmail, created_at: new Date(), paid: false });
+  res.json({ success: true });
+});
 
-      const payload = {
-        BusinessShortCode: SHORTCODE,
-        Password: password,
-        Timestamp: timestamp,
-        TransactionType: 'CustomerPayBillOnline',
-        Amount: Math.round(total),
-        PartyA: formattedPhone,
-        PartyB: SHORTCODE,
-        PhoneNumber: formattedPhone,
-        CallBackURL: `https://liquorbelle-mpesa-backend.onrender.com/api/callback`,
-        AccountReference: orderId,
-        TransactionDesc: `LiquorBelle Order ${orderId}`
-      };
-
-      const response = await axios.post(`${baseURL}/mpesa/stkpush/v1/processrequest`, payload, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-
-      // Store pending order in MongoDB (persistent)
-      await db.collection('pending_orders').insertOne({
-        orderId,
-        customerName,
-        phone: formattedPhone,
-        address,
-        items,
-        subtotal,
-        delivery,
-        total,
-        created_at: new Date(),
-        paid: false
-      });
-
-      res.json({ success: true, checkoutRequestID: response.data.CheckoutRequestID });
-    } catch (err) {
-      console.error('STK Push Error:', err.response?.data || err.message);
-      res.status(500).json({ success: false, message: 'Payment initiation failed' });
-    }
-  }
-);
-
-// ==================== M-PESA CALLBACK ====================
 app.post('/api/callback', async (req, res) => {
-  const callback = req.body;
-  const stkCallback = callback?.Body?.stkCallback;
+  const stkCallback = req.body?.Body?.stkCallback;
   if (!stkCallback) return res.json({ ResultCode: 0 });
-
   const orderId = stkCallback.CallbackMetadata?.Item?.find(i => i.Name === 'AccountReference')?.Value;
-  const amount = stkCallback.CallbackMetadata?.Item?.find(i => i.Name === 'Amount')?.Value;
-
-  if (stkCallback.ResultCode === 0) {
-    console.log(`✅ Payment successful for order ${orderId}, amount ${amount}`);
-    const pendingOrder = await db.collection('pending_orders').findOne({ orderId });
-    if (pendingOrder) {
-      let msg = `✅ PAYMENT CONFIRMED ✅\n\n`;
-      msg += `Order ID: ${pendingOrder.orderId}\n`;
-      msg += `Customer: ${pendingOrder.customerName}\n`;
-      msg += `Phone: ${pendingOrder.phone}\n`;
-      msg += `Address: ${pendingOrder.address}\n\n`;
-      msg += `ITEMS:\n`;
-      pendingOrder.items.forEach(i => { msg += `• ${i.name} x${i.qty} — KES ${(i.price * i.qty).toLocaleString()}\n`; });
-      msg += `\nSubtotal: KES ${pendingOrder.subtotal.toLocaleString()}\n`;
-      msg += `Delivery: ${pendingOrder.delivery === 0 ? 'FREE' : 'KES ' + pendingOrder.delivery.toLocaleString()}\n`;
-      msg += `TOTAL PAID: KES ${pendingOrder.total.toLocaleString()}\n\n`;
-      msg += `📍 Please share your live location now for delivery. 📍\n(📎 → Location → Share Live Location)`;
-      await db.collection('pending_orders').updateOne(
-        { orderId },
-        { $set: { paid: true, message: msg, paid_at: new Date() } }
+  if (stkCallback.ResultCode === 0 && orderId) {
+    console.log(`✅ Payment successful for order ${orderId}`);
+    const pending = await db.collection('pending_orders').findOne({ orderId });
+    if (pending) {
+      // Update order status to paid
+      await db.collection('orders').updateOne(
+        { order_number: orderId },
+        { $set: { status: 'paid', payment_method: 'M-PESA', updated_at: new Date() } },
+        { upsert: true }
       );
+      
+      // Send ORDER RECEIVED email (rider on the way)
+      await sendMpesaOrderReceivedEmail({
+        orderId, customerName: pending.customerName, items: pending.items,
+        subtotal: pending.subtotal, delivery: pending.delivery, total: pending.total,
+        address: pending.address, phone: pending.phone,
+        customerEmail: pending.customerEmail
+      });
+      
+      await db.collection('pending_orders').updateOne({ orderId }, { $set: { paid: true } });
     }
-  } else {
-    console.log(`❌ Payment failed: ${stkCallback.ResultDesc}`);
   }
   res.json({ ResultCode: 0 });
 });
 
-// ==================== PAYMENT STATUS ====================
 app.get('/api/status/:orderId', async (req, res) => {
-  const pendingOrder = await db.collection('pending_orders').findOne({ orderId: req.params.orderId });
-  if (pendingOrder && pendingOrder.paid) {
-    const waLink = `https://wa.me/${BUSINESS_NUMBER}?text=${encodeURIComponent(pendingOrder.message)}`;
-    res.json({ status: 'paid', waLink, message: pendingOrder.message });
-  } else {
-    res.json({ status: 'pending' });
-  }
+  const pending = await db.collection('pending_orders').findOne({ orderId: req.params.orderId });
+  res.json({ status: pending?.paid ? 'paid' : 'pending' });
 });
 
-// ==================== EMAIL OTP (MongoDB persistent) ====================
-const otpStore = new Map(); // Backup, but mainly use MongoDB
-
-app.post('/api/send-email-otp',
-  otpLimiter,
-  body('email').isEmail().normalizeEmail(),
-  body('otp').isLength({ min: 6, max: 6 }),
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.json({ success: false, message: 'Invalid email format' });
-    }
-
-    const { email, otp } = req.body;
-    if (!BREVO_API_KEY) {
-      console.error('❌ BREVO_API_KEY not configured');
-      return res.json({ success: false, message: 'Email service not configured' });
-    }
-
-    // Store OTP in MongoDB with TTL
-    await db.collection('otps').updateOne(
-      { email },
-      { $set: { otp, created_at: new Date() } },
-      { upsert: true }
-    );
-
-    const html = generateOtpEmailHtml(otp);
-
-    try {
-      await axios.post('https://api.brevo.com/v3/smtp/email', {
-        sender: { name: 'LiquorBelle', email: 'timblax0@gmail.com' },
-        to: [{ email: email }],
-        subject: 'Your LiquorBelle Verification Code',
-        htmlContent: html
-      }, {
-        headers: { 'api-key': BREVO_API_KEY, 'Content-Type': 'application/json' }
-      });
-
-      console.log(`✅ OTP sent to ${email}`);
-      res.json({ success: true, message: 'OTP sent to email' });
-    } catch (err) {
-      console.error('❌ Brevo API Error:', err.response?.data || err.message);
-      res.json({ success: false, message: 'Failed to send email. Please try again.' });
-    }
-  }
-);
-
-app.post('/api/verify-otp', async (req, res) => {
-  const { email, otp } = req.body;
-  const stored = await db.collection('otps').findOne({ email });
-
-  if (!stored) return res.json({ success: false, message: 'No OTP found. Request a new one.' });
-  if (stored.otp !== otp) return res.json({ success: false, message: 'Invalid OTP. Try again.' });
-
-  await db.collection('otps').deleteOne({ email });
-  res.json({ success: true, message: 'Verification successful' });
-});
-
-// ==================== ORDER CONFIRMATION EMAIL ====================
+// ==================== ORDER EMAIL ENDPOINTS ====================
 app.post('/api/send-order-email', async (req, res) => {
   const { email, orderId, customerName, phone, items, subtotal, delivery, total, address, timestamp, paymentMethod } = req.body;
-
-  if (!email || !orderId) {
-    return res.json({ success: false, message: 'Missing required fields' });
+  if (!BREVO_API_KEY) return res.json({ success: false });
+  
+  if (paymentMethod === 'cod') {
+    await sendCodOrderReceivedEmail({ orderId, customerName, items, subtotal, delivery, total, address, phone, customerEmail: email });
+  } else {
+    await sendMpesaOrderReceivedEmail({ orderId, customerName, items, subtotal, delivery, total, address, phone, customerEmail: email });
   }
-
-  if (!BREVO_API_KEY) {
-    console.error('❌ BREVO_API_KEY not configured');
-    return res.json({ success: false, message: 'Email service not configured' });
-  }
-
-  const html = generateOrderEmailHtml({
-    orderId,
-    customerName,
-    items,
-    subtotal,
-    delivery,
-    total,
-    address,
-    timestamp,
-    paymentMethod,
-    phone,
-    customerEmail: email
-  }, false);
-
-  try {
-    await axios.post('https://api.brevo.com/v3/smtp/email', {
-      sender: { name: 'LiquorBelle', email: 'timblax0@gmail.com' },
-      to: [{ email: email }],
-      subject: `📦 Order Confirmed ${orderId} - LiquorBelle`,
-      htmlContent: html
-    }, {
-      headers: { 'api-key': BREVO_API_KEY, 'Content-Type': 'application/json' }
-    });
-
-    console.log(`📧 Order confirmation sent to ${email}`);
-    res.json({ success: true });
-  } catch (err) {
-    console.error('❌ Order email error:', err.response?.data || err.message);
-    res.json({ success: false, message: 'Failed to send confirmation email' });
-  }
+  res.json({ success: true });
 });
 
-// ==================== DATABASE API ENDPOINTS (MONGODB) ====================
-
-// Get all products (public)
+// ==================== PRODUCT & ORDER CRUD ====================
 app.get('/api/db/products', async (req, res) => {
-  try {
-    const products = await db.collection('products').find({}).sort({ created_at: -1 }).toArray();
-    res.json({ success: true, products });
-  } catch (err) {
-    console.error('Products fetch error:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch products' });
-  }
+  const products = await db.collection('products').find({}).sort({ created_at: -1 }).toArray();
+  res.json({ success: true, products });
 });
 
-// Create product (admin only)
 app.post('/api/db/products', requireAdmin, async (req, res) => {
-  try {
-    const { name, category, badge, image, description, variants, isTrending } = req.body;
-
-    if (!name || !variants || variants.length === 0) {
-      return res.status(400).json({ success: false, message: 'Name and at least one variant required' });
-    }
-
-    for (const v of variants) {
-      if (!v.size || typeof v.price !== 'number') {
-        return res.status(400).json({ success: false, message: 'Each variant must have size and valid price' });
-      }
-    }
-
-    const product = {
-      name,
-      category: category || 'other',
-      badge: badge || '',
-      image: image || '',
-      description: description || '',
-      variants,
-      isTrending: isTrending || false,
-      created_at: new Date(),
-      updated_at: new Date()
-    };
-    const result = await db.collection('products').insertOne(product);
-    res.json({ success: true, product: { _id: result.insertedId, ...product } });
-  } catch (err) {
-    console.error('Product create error:', err);
-    res.status(500).json({ success: false, message: 'Failed to create product' });
-  }
+  const product = { ...req.body, created_at: new Date(), updated_at: new Date() };
+  const result = await db.collection('products').insertOne(product);
+  res.json({ success: true, product: { _id: result.insertedId, ...product } });
 });
 
-// Update product (admin only)
 app.put('/api/db/products/:id', requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { name, category, badge, image, description, variants, isTrending } = req.body;
-
-    if (!name || !variants || variants.length === 0) {
-      return res.status(400).json({ success: false, message: 'Name and at least one variant required' });
-    }
-
-    for (const v of variants) {
-      if (!v.size || typeof v.price !== 'number') {
-        return res.status(400).json({ success: false, message: 'Each variant must have size and valid price' });
-      }
-    }
-
-    const result = await db.collection('products').updateOne(
-      { _id: new ObjectId(id) },
-      { $set: { name, category, badge, image, description, variants, isTrending: isTrending || false, updated_at: new Date() } }
-    );
-
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ success: false, message: 'Product not found' });
-    }
-
-    res.json({ success: true });
-  } catch (err) {
-    console.error('Product update error:', err);
-    res.status(500).json({ success: false, message: 'Failed to update product' });
-  }
+  await db.collection('products').updateOne({ _id: new ObjectId(req.params.id) }, { $set: { ...req.body, updated_at: new Date() } });
+  res.json({ success: true });
 });
 
-// Delete product (admin only)
 app.delete('/api/db/products/:id', requireAdmin, async (req, res) => {
-  try {
-    const result = await db.collection('products').deleteOne({ _id: new ObjectId(req.params.id) });
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ success: false, message: 'Product not found' });
-    }
-    res.json({ success: true });
-  } catch (err) {
-    console.error('Product delete error:', err);
-    res.status(500).json({ success: false, message: 'Failed to delete product' });
-  }
+  await db.collection('products').deleteOne({ _id: new ObjectId(req.params.id) });
+  res.json({ success: true });
 });
 
-// Get all orders (admin only)
 app.get('/api/db/orders', requireAdmin, async (req, res) => {
-  try {
-    const orders = await db.collection('orders').find({}).sort({ created_at: -1 }).toArray();
-    res.json({ success: true, orders });
-  } catch (err) {
-    console.error('Orders fetch error:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch orders' });
-  }
+  const orders = await db.collection('orders').find({}).sort({ created_at: -1 }).toArray();
+  res.json({ success: true, orders });
 });
 
-// Get order by ID (admin only)
-app.get('/api/db/orders/:id', requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const order = await db.collection('orders').findOne({ _id: new ObjectId(id) });
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-    res.json({ success: true, order });
-  } catch (err) {
-    console.error('Order fetch error:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch order' });
-  }
-});
-
-// Create order (public - anyone can create)
 app.post('/api/db/orders', async (req, res) => {
-  try {
-    const { orderNumber, userId, customerName, customerEmail, phone, address, notes, subtotal, delivery, total, paymentMethod, status, items } = req.body;
-
-    // Validation
-    if (!orderNumber || !customerName || !customerEmail || !phone || !address) {
-      return res.status(400).json({ success: false, message: 'Missing required fields' });
-    }
-    if (!customerEmail.includes('@')) {
-      return res.status(400).json({ success: false, message: 'Valid email required' });
-    }
-    if (!items || items.length === 0) {
-      return res.status(400).json({ success: false, message: 'At least one item required' });
-    }
-    if (typeof total !== 'number' || total <= 0) {
-      return res.status(400).json({ success: false, message: 'Valid total amount required' });
-    }
-
-    const order = {
-      order_number: orderNumber,
-      user_id: userId || null,
-      customer_name: customerName,
-      customer_email: customerEmail.toLowerCase(),
-      phone,
-      address,
-      notes: notes || '',
-      subtotal: subtotal || 0,
-      delivery: delivery || 0,
-      total,
-      payment_method: paymentMethod,
-      status: status || 'pending',
-      items: items.map(item => ({ ...item, size: item.size || '750ml' })),
-      created_at: new Date(),
-      updated_at: new Date()
-    };
-
-    const result = await db.collection('orders').insertOne(order);
-    res.json({ success: true, order: { _id: result.insertedId, ...order } });
-  } catch (err) {
-    console.error('Create order error:', err);
-    res.status(500).json({ success: false, message: 'Failed to create order' });
+  const { orderNumber, customerName, customerEmail, phone, address, notes, subtotal, delivery, total, paymentMethod, items } = req.body;
+  const order = {
+    order_number: orderNumber, customer_name: customerName, customer_email: customerEmail.toLowerCase(),
+    phone, address, notes: notes || '', subtotal: subtotal || 0, delivery: delivery || 0, total,
+    payment_method: paymentMethod, status: 'pending',
+    items: items.map(item => ({ ...item, size: item.size || '750ml' })),
+    created_at: new Date(), updated_at: new Date()
+  };
+  const result = await db.collection('orders').insertOne(order);
+  
+  // Send ORDER RECEIVED email for COD orders
+  if (paymentMethod === 'cod') {
+    await sendCodOrderReceivedEmail({ orderId: orderNumber, customerName, items, subtotal, delivery, total, address, phone, customerEmail });
   }
+  
+  res.json({ success: true, order: { _id: result.insertedId, ...order } });
 });
 
-// Update order status (admin only)
 app.put('/api/db/orders/:id/status', requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = req.body;
-
-    const result = await db.collection('orders').updateOne(
-      { _id: new ObjectId(id) },
-      { $set: { status, updated_at: new Date() } }
-    );
-
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-
-    // If status changed to paid, send confirmation email
-    if (status === 'paid') {
-      const order = await db.collection('orders').findOne({ _id: new ObjectId(id) });
-      if (order && order.customer_email) {
-        await sendOrderPaidEmail(
-          order._id,
-          order.customer_email,
-          order.customer_name,
-          order.order_number,
-          order.total,
-          order.address,
-          order.items || [],
-          order.subtotal,
-          order.delivery,
-          order.phone,
-          order.created_at
-        );
-      }
-    }
-
-    res.json({ success: true });
-  } catch (err) {
-    console.error('Order status update error:', err);
-    res.status(500).json({ success: false, message: 'Failed to update order status' });
-  }
-});
-
-// Delete order (admin only)
-app.delete('/api/db/orders/:id', requireAdmin, async (req, res) => {
-  try {
-    const result = await db.collection('orders').deleteOne({ _id: new ObjectId(req.params.id) });
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-    res.json({ success: true });
-  } catch (err) {
-    console.error('Order delete error:', err);
-    res.status(500).json({ success: false, message: 'Failed to delete order' });
-  }
-});
-
-// Dashboard stats (admin only) - OPTIMIZED with Promise.all
-app.get('/api/db/stats', requireAdmin, async (req, res) => {
-  try {
-    const [
-      totalOrders,
-      totalProducts,
-      revenueResult,
-      pendingOrdersCount,
-      paidOrdersCount,
-      deliveredOrdersCount,
-      totalUsers
-    ] = await Promise.all([
-      db.collection('orders').countDocuments(),
-      db.collection('products').countDocuments(),
-      db.collection('orders').aggregate([
-        { $match: { status: 'delivered' } },
-        { $group: { _id: null, total: { $sum: '$total' } } }
-      ]).toArray(),
-      db.collection('orders').countDocuments({ status: 'pending' }),
-      db.collection('orders').countDocuments({ status: 'paid' }),
-      db.collection('orders').countDocuments({ status: 'delivered' }),
-      db.collection('users').countDocuments()
-    ]);
-
-    const totalRevenue = revenueResult[0]?.total || 0;
-
-    res.json({
-      success: true,
-      stats: {
-        totalOrders,
-        totalProducts,
-        totalRevenue,
-        pendingOrders: pendingOrdersCount,
-        paidOrders: paidOrdersCount,
-        deliveredOrders: deliveredOrdersCount,
-        totalUsers
-      }
-    });
-  } catch (err) {
-    console.error('Stats fetch error:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch stats' });
-  }
-});
-
-// Delivery settings (admin only)
-app.get('/api/admin/delivery-settings', requireAdmin, async (req, res) => {
-  try {
-    const settings = await db.collection('settings').findOne({ key: 'delivery' });
-    if (!settings) {
-      return res.json({
-        success: true,
-        settings: {
-          delivery_fee: 150,
-          free_delivery_threshold: 3000,
-          delivery_enabled: true
-        }
+  const { status } = req.body;
+  await db.collection('orders').updateOne({ _id: new ObjectId(req.params.id) }, { $set: { status, updated_at: new Date() } });
+  
+  // When status changes to 'delivered', send ORDER DELIVERED email
+  if (status === 'delivered') {
+    const order = await db.collection('orders').findOne({ _id: new ObjectId(req.params.id) });
+    if (order && order.customer_email) {
+      await sendOrderDeliveredEmail({
+        orderId: order.order_number, customerName: order.customer_name,
+        items: order.items, total: order.total,
+        phone: order.phone, customerEmail: order.customer_email
       });
     }
-    res.json({ success: true, settings: settings.value });
-  } catch (err) {
-    console.error('Get delivery settings error:', err);
-    res.status(500).json({ success: false, message: 'Failed to get settings' });
   }
+  res.json({ success: true });
+});
+
+app.delete('/api/db/orders/:id', requireAdmin, async (req, res) => {
+  await db.collection('orders').deleteOne({ _id: new ObjectId(req.params.id) });
+  res.json({ success: true });
+});
+
+app.get('/api/db/stats', requireAdmin, async (req, res) => {
+  const [totalOrders, totalProducts, revenueResult, pending, paid, delivered, totalUsers] = await Promise.all([
+    db.collection('orders').countDocuments(),
+    db.collection('products').countDocuments(),
+    db.collection('orders').aggregate([{ $match: { status: 'delivered' } }, { $group: { _id: null, total: { $sum: '$total' } } }]).toArray(),
+    db.collection('orders').countDocuments({ status: 'pending' }),
+    db.collection('orders').countDocuments({ status: 'paid' }),
+    db.collection('orders').countDocuments({ status: 'delivered' }),
+    db.collection('users').countDocuments()
+  ]);
+  res.json({ success: true, stats: { totalOrders, totalProducts, totalRevenue: revenueResult[0]?.total || 0, pendingOrders: pending, paidOrders: paid, deliveredOrders: delivered, totalUsers } });
+});
+
+app.get('/api/admin/delivery-settings', requireAdmin, async (req, res) => {
+  const settings = await db.collection('settings').findOne({ key: 'delivery' });
+  res.json({ success: true, settings: settings?.value || { delivery_fee: 150, free_delivery_threshold: 3000, delivery_enabled: true } });
 });
 
 app.post('/api/admin/delivery-settings', requireAdmin, async (req, res) => {
-  try {
-    const { delivery_fee, free_delivery_threshold, delivery_enabled } = req.body;
-    await db.collection('settings').updateOne(
-      { key: 'delivery' },
-      { $set: { value: { delivery_fee, free_delivery_threshold, delivery_enabled }, updated_at: new Date() } },
-      { upsert: true }
-    );
-    res.json({ success: true, message: 'Delivery settings saved' });
-  } catch (err) {
-    console.error('Update delivery settings error:', err);
-    res.status(500).json({ success: false, message: 'Failed to update settings' });
-  }
+  await db.collection('settings').updateOne({ key: 'delivery' }, { $set: { value: req.body, updated_at: new Date() } }, { upsert: true });
+  res.json({ success: true });
 });
 
-// Recent orders for cashier (last 24 hours) - admin only
 app.get('/api/admin/recent-orders', requireAdmin, async (req, res) => {
-  try {
-    const last24h = new Date();
-    last24h.setHours(last24h.getHours() - 24);
-
-    const orders = await db.collection('orders')
-      .find({ created_at: { $gte: last24h } })
-      .sort({ created_at: -1 })
-      .toArray();
-
-    res.json({ success: true, orders });
-  } catch (err) {
-    console.error('Recent orders error:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch recent orders' });
-  }
+  const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const orders = await db.collection('orders').find({ created_at: { $gte: last24h } }).sort({ created_at: -1 }).toArray();
+  res.json({ success: true, orders });
 });
 
-// Admin verification (simple)
 app.post('/api/admin/verify', async (req, res) => {
   const { password, type } = req.body;
-  if (type === 'orders') {
-    res.json({ success: password === CASHIER_PASSWORD });
-  } else {
-    res.json({ success: password === ADMIN_PASSWORD });
-  }
+  if (type === 'orders') res.json({ success: password === CASHIER_PASSWORD });
+  else res.json({ success: password === ADMIN_PASSWORD });
 });
 
-// Health check (public)
+// ==================== OTP ====================
+app.post('/api/send-email-otp', otpLimiter, async (req, res) => {
+  const { email, otp } = req.body;
+  await db.collection('otps').updateOne({ email }, { $set: { otp, created_at: new Date() } }, { upsert: true });
+  try {
+    await axios.post('https://api.brevo.com/v3/smtp/email', {
+      sender: { name: 'LiquorBelle', email: 'timblax0@gmail.com' },
+      to: [{ email }],
+      subject: 'Your LiquorBelle Verification Code',
+      htmlContent: `<div style="text-align:center;padding:40px;"><h2>${otp}</h2><p>Your verification code expires in 10 minutes.</p></div>`
+    }, { headers: { 'api-key': BREVO_API_KEY } });
+    res.json({ success: true });
+  } catch (err) { res.json({ success: false }); }
+});
+
+app.post('/api/verify-otp', async (req, res) => {
+  const stored = await db.collection('otps').findOne({ email: req.body.email });
+  if (!stored || stored.otp !== req.body.otp) return res.json({ success: false });
+  await db.collection('otps').deleteOne({ email: req.body.email });
+  res.json({ success: true });
+});
+
+// ==================== HEALTH ====================
 app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    database: 'MongoDB',
-    brevoConfigured: !!BREVO_API_KEY,
-    message: 'LiquorBelle API is running with variants support and user authentication',
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString()
-  });
+  res.json({ status: 'ok', database: 'MongoDB', uptime: process.uptime() });
 });
 
-// ==================== ERROR HANDLING ====================
-app.use((err, req, res, next) => {
-  console.error('Server Error:', err);
-  res.status(500).json({ success: false, message: 'Internal server error' });
-});
-
-// ==================== START SERVER ====================
+// ==================== START ====================
 const PORT = process.env.PORT || 3000;
 connectDB().then(() => {
   app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📧 Brevo API Key: ${BREVO_API_KEY ? '✅ Configured' : '❌ Missing'}`);
-    console.log(`💳 M-PESA: ${CONSUMER_KEY && CONSUMER_KEY !== 'YOUR_CONSUMER_KEY' ? '✅ Configured' : '⚠️ Sandbox mode'}`);
-    console.log(`🔒 Rate Limiting: ✅ Active`);
+    console.log(`📧 Email: ${BREVO_API_KEY ? '✅' : '❌'}`);
+    console.log(`🔐 Auth: ✅ JWT`);
     console.log(`🗄️ MongoDB: ✅ Connected`);
-    console.log(`👤 User Authentication: ✅ Enabled (JWT + bcrypt)`);
-    console.log(`🔐 Admin Protection: ✅ JWT-based admin roles`);
-    console.log(`💾 Pending Orders: ✅ Persistent (MongoDB)`);
-    console.log(`📱 OTP Storage: ✅ Persistent (MongoDB with TTL)`);
+    console.log(``);
+    console.log(`📨 EMAIL FLOW:`);
+    console.log(`   COD: Place Order → "Order Received (Rider on way)" | Delivered → "Order Delivered Successfully"`);
+    console.log(`   M-PESA: Payment Callback → "Order Received (Rider on way)" | Delivered → "Order Delivered Successfully"`);
   });
 });
