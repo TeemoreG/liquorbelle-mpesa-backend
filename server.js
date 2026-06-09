@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const compression = require('compression'); // ADDED: For faster responses
 const rateLimit = require('express-rate-limit');
 const { MongoClient, ObjectId } = require('mongodb');
 const bcrypt = require('bcryptjs');
@@ -24,6 +25,7 @@ if (!process.env.MONGODB_URI) {
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(compression()); // ADDED: Gzip compression for faster responses
 
 // ==================== JWT CONFIG ====================
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -31,10 +33,10 @@ const JWT_EXPIRY = '7d';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const CASHIER_PASSWORD = process.env.CASHIER_PASSWORD || 'cashier123';
 
-// ==================== RATE LIMITING ====================
+// ==================== RATE LIMITING - INCREASED LIMITS ====================
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 200, // CHANGED: 100 → 200
   message: { success: false, message: 'Too many requests, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -66,7 +68,7 @@ const authLimiter = rateLimit({
 
 const orderCreateLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 20,
+  max: 50, // CHANGED: 20 → 50
   message: { success: false, message: 'Too many orders placed. Please wait.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -74,7 +76,7 @@ const orderCreateLimiter = rateLimit({
 
 const adminLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 50,
+  max: 200, // CHANGED: 50 → 200
   message: { success: false, message: 'Too many admin requests. Please slow down.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -262,7 +264,7 @@ async function sendMpesaOrderReceivedEmail(orderData) {
     <tr style="border-bottom:1px solid #1c1c28;">
       <td style="padding:12px 0;"><span style="color:#e0e0e0;">${escapeHtml(item.name)} x${item.qty}</span><br><span style="color:#555;font-size:11px;">${escapeHtml(item.size || '750ml')}</span></td>
       <td style="padding:12px 0;text-align:right;color:#f0a500;">KES ${(item.price * item.qty).toLocaleString()}</td>
-    </tr>
+    </table>
   `).join('');
 
   const html = `<!DOCTYPE html>
@@ -534,14 +536,12 @@ app.post('/api/callback', async (req, res) => {
     console.log(`✅ Payment successful for order ${orderId}`);
     const pending = await db.collection('pending_orders').findOne({ orderId });
     if (pending) {
-      // Update order status to paid
       await db.collection('orders').updateOne(
         { order_number: orderId },
         { $set: { status: 'paid', payment_method: 'M-PESA', updated_at: new Date() } },
         { upsert: true }
       );
       
-      // Send ORDER RECEIVED email (rider on the way)
       await sendMpesaOrderReceivedEmail({
         orderId, customerName: pending.customerName, items: pending.items,
         subtotal: pending.subtotal, delivery: pending.delivery, total: pending.total,
@@ -611,7 +611,6 @@ app.post('/api/db/orders', async (req, res) => {
   };
   const result = await db.collection('orders').insertOne(order);
   
-  // Send ORDER RECEIVED email for COD orders
   if (paymentMethod === 'cod') {
     await sendCodOrderReceivedEmail({ orderId: orderNumber, customerName, items, subtotal, delivery, total, address, phone, customerEmail });
   }
@@ -623,7 +622,6 @@ app.put('/api/db/orders/:id/status', requireAdmin, async (req, res) => {
   const { status } = req.body;
   await db.collection('orders').updateOne({ _id: new ObjectId(req.params.id) }, { $set: { status, updated_at: new Date() } });
   
-  // When status changes to 'delivered', send ORDER DELIVERED email
   if (status === 'delivered') {
     const order = await db.collection('orders').findOne({ _id: new ObjectId(req.params.id) });
     if (order && order.customer_email) {
