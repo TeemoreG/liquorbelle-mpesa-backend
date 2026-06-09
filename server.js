@@ -24,6 +24,7 @@ if (!process.env.MONGODB_URI) {
 
 const app = express();
 app.use(cors());
+app.set('trust proxy', 1);  // Fixes X-Forwarded-For warning
 app.use(express.json());
 app.use(compression()); // ADDED: Gzip compression for faster responses
 
