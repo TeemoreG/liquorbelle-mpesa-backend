@@ -340,18 +340,14 @@ async function sendMpesaOrderReceivedEmail(orderData) {
   } catch (err) { console.error('Email error:', err.message); }
 }
 
-// ==================== EMAIL 3: ORDER DELIVERED SUCCESSFULLY (FIXED - handles both data structures) ====================
+// ==================== EMAIL 3: ORDER DELIVERED SUCCESSFULLY ====================
 async function sendOrderDeliveredEmail(orderData) {
   if (!BREVO_API_KEY) return;
   const { orderId, customerName, items, total, phone, customerEmail } = orderData;
   
-  // FIXED: Properly handle items from database (which may have product_name instead of name)
   const itemsHtml = (items || []).map(item => {
-    // Get product name from various possible property names
     const productName = item.product_name || item.name || item.product || 'Product';
-    // Get quantity from various possible property names
     const quantity = item.quantity || item.qty || 1;
-    // Get price from various possible property names
     const productPrice = item.price || item.unit_price || 0;
     
     return `
@@ -679,6 +675,18 @@ app.get('/api/db/stats', requireAdmin, async (req, res) => {
   res.json({ success: true, stats: { totalOrders, totalProducts, totalRevenue: revenueResult[0]?.total || 0, pendingOrders: pending, paidOrders: paid, deliveredOrders: delivered, totalUsers } });
 });
 
+// ==================== DELIVERY SETTINGS ====================
+// PUBLIC endpoint for checkout (no authentication required)
+app.get('/api/delivery-settings', async (req, res) => {
+  try {
+    const settings = await db.collection('settings').findOne({ key: 'delivery' });
+    res.json({ success: true, settings: settings?.value || { delivery_fee: 150, free_delivery_threshold: 3000, delivery_enabled: true } });
+  } catch (err) {
+    res.json({ success: true, settings: { delivery_fee: 150, free_delivery_threshold: 3000, delivery_enabled: true } });
+  }
+});
+
+// ADMIN endpoint for updating settings (requires authentication)
 app.get('/api/admin/delivery-settings', requireAdmin, async (req, res) => {
   const settings = await db.collection('settings').findOne({ key: 'delivery' });
   res.json({ success: true, settings: settings?.value || { delivery_fee: 150, free_delivery_threshold: 3000, delivery_enabled: true } });
