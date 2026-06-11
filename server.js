@@ -5,14 +5,8 @@ const cors = require('cors');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const { MongoClient, ObjectId } = require('mongodb');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 
 // ==================== ENVIRONMENT VALIDATION ====================
-if (!process.env.JWT_SECRET) {
-  console.error('❌ JWT_SECRET env var not set. Refusing to start.');
-  process.exit(1);
-}
 if (!process.env.ADMIN_PASSWORD) {
   console.error('❌ ADMIN_PASSWORD env var not set. Refusing to start.');
   process.exit(1);
@@ -28,16 +22,9 @@ app.set('trust proxy', 1);
 app.use(express.json());
 app.use(compression());
 
-// ==================== JWT CONFIG ====================
-const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || JWT_SECRET + '_refresh';
-const JWT_EXPIRY = '7d';
-const JWT_REFRESH_EXPIRY = '30d';
+// ==================== ADMIN CONFIG ====================
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const CASHIER_PASSWORD = process.env.CASHIER_PASSWORD || 'cashier123';
-
-// Store refresh tokens (in production, use Redis or MongoDB)
-let refreshTokens = [];
 
 // ==================== EMAIL VALIDATION ====================
 function isValidEmail(email) {
@@ -70,14 +57,6 @@ const stkLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: { success: false, message: 'Too many login attempts. Please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
 const orderCreateLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 50,
@@ -97,30 +76,11 @@ const adminLimiter = rateLimit({
 app.use('/api/', generalLimiter);
 app.use('/api/send-email-otp', otpLimiter);
 app.use('/api/stkpush', stkLimiter);
-app.use('/api/auth/login', authLimiter);
-app.use('/api/auth/register', authLimiter);
-app.use('/api/auth/delete', authLimiter);
-app.use('/api/auth/refresh', generalLimiter);
 app.use('/api/db/orders', orderCreateLimiter);
 app.use('/api/db/', adminLimiter);
 app.use('/api/admin/', adminLimiter);
 
-// ==================== AUTH MIDDLEWARE ====================
-function authenticateToken(req, res, next) {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-  if (!token) {
-    return res.status(401).json({ success: false, message: 'Access token required' });
-  }
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({ success: false, message: 'Invalid or expired token' });
-    }
-    req.user = user;
-    next();
-  });
-}
-
+// ==================== ADMIN MIDDLEWARE ====================
 function requireAdmin(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -139,6 +99,14 @@ function requireAdmin(req, res, next) {
   }
 }
 
+// ==================== JWT FOR ADMIN ONLY ====================
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.error('❌ JWT_SECRET env var not set. Refusing to start.');
+  process.exit(1);
+}
+const jwt = require('jsonwebtoken');
+
 // ==================== MONGODB CONNECTION ====================
 const MONGODB_URI = process.env.MONGODB_URI;
 let db;
@@ -155,10 +123,8 @@ async function connectDB() {
     await db.collection('orders').createIndex({ customer_email: 1 });
     await db.collection('orders').createIndex({ created_at: -1 });
     await db.collection('settings').createIndex({ key: 1 });
-    await db.collection('users').createIndex({ email: 1 }, { unique: true });
     await db.collection('pending_orders').createIndex({ created_at: 1 }, { expireAfterSeconds: 3600 });
     await db.collection('otps').createIndex({ created_at: 1 }, { expireAfterSeconds: 600 });
-    await db.collection('refresh_tokens').createIndex({ created_at: 1 }, { expireAfterSeconds: 2592000 }); // 30 days
 
     const productCount = await db.collection('products').countDocuments();
     if (productCount === 0) {
@@ -195,7 +161,7 @@ function escapeHtml(str) {
 
 const BREVO_API_KEY = process.env.BREVO_API_KEY;
 
-// ==================== EMAIL 1: COD - ORDER RECEIVED (RIDER ON THE WAY) ====================
+// ==================== EMAIL FUNCTIONS ====================
 async function sendCodOrderReceivedEmail(orderData) {
   if (!BREVO_API_KEY) return;
   const { orderId, customerName, items, subtotal, delivery, total, address, phone, customerEmail } = orderData;
@@ -210,7 +176,7 @@ async function sendCodOrderReceivedEmail(orderData) {
       <tr style="border-bottom:1px solid #1c1c28;">
         <td style="padding:12px 0;"><span style="color:#e0e0e0;">${escapeHtml(productName)} x${productQty}</span><br><span style="color:#555;font-size:11px;">${escapeHtml(productSize)}</span></td>
         <td style="padding:12px 0;text-align:right;color:#f0a500;">KES ${(productPrice * productQty).toLocaleString()}</td>
-      </tr>
+      </td>
     `;
   }).join('');
 
@@ -251,7 +217,7 @@ async function sendCodOrderReceivedEmail(orderData) {
   </div>
   <div style="margin:0 28px 20px;background:rgba(240,165,0,0.08);border-radius:16px;padding:16px;text-align:center;">
     <div style="font-size:28px;">🏍️</div>
-    <div style="color:#f0a500;font-weight:800;">Estimated Delivery: 30-45 minutes</div>
+    <div style="color:#f0a500;font-weight:800;">Estimated Delivery: 10-45 minutes</div>
     <div style="color:#666;">Rider will call before arrival</div>
   </div>
   <div style="padding:20px 28px;text-align:center;">
@@ -274,7 +240,6 @@ async function sendCodOrderReceivedEmail(orderData) {
   } catch (err) { console.error('Email error:', err.message); }
 }
 
-// ==================== EMAIL 2: M-PESA - PAYMENT RECEIVED (ORDER ON THE WAY) ====================
 async function sendMpesaOrderReceivedEmail(orderData) {
   if (!BREVO_API_KEY) return;
   const { orderId, customerName, items, subtotal, delivery, total, address, phone, customerEmail } = orderData;
@@ -330,7 +295,7 @@ async function sendMpesaOrderReceivedEmail(orderData) {
   </div>
   <div style="margin:0 28px 20px;background:rgba(46,204,113,0.08);border-radius:16px;padding:16px;text-align:center;">
     <div style="font-size:28px;">🏍️</div>
-    <div style="color:#2ecc71;font-weight:800;">Estimated Delivery: 30-45 minutes</div>
+    <div style="color:#2ecc71;font-weight:800;">Estimated Delivery: 10-45 minutes</div>
     <div style="color:#666;">Rider will call before arrival</div>
   </div>
   <div style="padding:20px 28px;text-align:center;">
@@ -353,7 +318,6 @@ async function sendMpesaOrderReceivedEmail(orderData) {
   } catch (err) { console.error('Email error:', err.message); }
 }
 
-// ==================== EMAIL 3: ORDER DELIVERED SUCCESSFULLY ====================
 async function sendOrderDeliveredEmail(orderData) {
   if (!BREVO_API_KEY) return;
   const { orderId, customerName, items, total, phone, customerEmail } = orderData;
@@ -367,7 +331,7 @@ async function sendOrderDeliveredEmail(orderData) {
       <tr style="border-bottom:1px solid #1c1c28;">
         <td style="padding:6px 0;color:#ddd;">${escapeHtml(productName)} x${quantity}</td>
         <td style="text-align:right;color:#2ecc71;">KES ${(productPrice * quantity).toLocaleString()}</td>
-       </tr>
+      </tr>
     `;
   }).join('');
 
@@ -429,171 +393,6 @@ app.post('/api/admin/login', async (req, res) => {
   res.status(401).json({ success: false, message: 'Invalid password' });
 });
 
-// ==================== USER AUTH WITH REFRESH TOKEN ====================
-// Generate tokens
-function generateTokens(userId, email, name, role) {
-  const accessToken = jwt.sign({ id: userId, email, name, role }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
-  const refreshToken = jwt.sign({ id: userId, email, role }, JWT_REFRESH_SECRET, { expiresIn: JWT_REFRESH_EXPIRY });
-  return { accessToken, refreshToken };
-}
-
-// Store refresh token in database
-async function storeRefreshToken(userId, refreshToken) {
-  await db.collection('refresh_tokens').insertOne({
-    user_id: userId,
-    token: refreshToken,
-    created_at: new Date()
-  });
-}
-
-// Verify refresh token
-async function verifyRefreshToken(refreshToken) {
-  try {
-    const decoded = jwt.verify(refreshToken, JWT_REFRESH_SECRET);
-    const stored = await db.collection('refresh_tokens').findOne({ 
-      token: refreshToken, 
-      user_id: decoded.id 
-    });
-    if (!stored) return null;
-    return decoded;
-  } catch (err) {
-    return null;
-  }
-}
-
-// Refresh token endpoint
-app.post('/api/auth/refresh', async (req, res) => {
-  const { refreshToken } = req.body;
-  if (!refreshToken) {
-    return res.status(401).json({ success: false, message: 'Refresh token required' });
-  }
-  
-  const decoded = await verifyRefreshToken(refreshToken);
-  if (!decoded) {
-    return res.status(403).json({ success: false, message: 'Invalid or expired refresh token' });
-  }
-  
-  const user = await db.collection('users').findOne({ _id: new ObjectId(decoded.id) });
-  if (!user) {
-    return res.status(404).json({ success: false, message: 'User not found' });
-  }
-  
-  // Generate new tokens
-  const { accessToken, refreshToken: newRefreshToken } = generateTokens(user._id, user.email, user.name, user.role);
-  
-  // Store new refresh token and delete old one
-  await db.collection('refresh_tokens').deleteOne({ token: refreshToken });
-  await storeRefreshToken(user._id, newRefreshToken);
-  
-  res.json({ 
-    success: true, 
-    accessToken, 
-    refreshToken: newRefreshToken,
-    user: { _id: user._id, name: user.name, email: user.email, phone: user.phone, role: user.role }
-  });
-});
-
-// Logout endpoint - invalidate refresh token
-app.post('/api/auth/logout', authenticateToken, async (req, res) => {
-  const { refreshToken } = req.body;
-  if (refreshToken) {
-    await db.collection('refresh_tokens').deleteOne({ token: refreshToken });
-  }
-  res.json({ success: true, message: 'Logged out successfully' });
-});
-
-app.post('/api/auth/register', async (req, res) => {
-  try {
-    const { name, phone, email, password } = req.body;
-    if (!name || !phone || !email || !password) return res.status(400).json({ success: false, message: 'All fields required' });
-    if (!isValidEmail(email)) return res.status(400).json({ success: false, message: 'Please enter a valid email address' });
-    if (password.length < 6) return res.status(400).json({ success: false, message: 'Password min 6 characters' });
-
-    const existing = await db.collection('users').findOne({ email: email.toLowerCase() });
-    if (existing) return res.status(400).json({ success: false, message: 'Email already registered' });
-
-    const hashed = await bcrypt.hash(password, 10);
-    const user = { name, phone, email: email.toLowerCase(), password: hashed, role: 'user', created_at: new Date() };
-    const result = await db.collection('users').insertOne(user);
-    
-    const { accessToken, refreshToken } = generateTokens(result.insertedId, user.email, user.name, user.role);
-    await storeRefreshToken(result.insertedId, refreshToken);
-    
-    const { password: _, ...userWithoutPassword } = user;
-    res.json({ success: true, user: userWithoutPassword, accessToken, refreshToken });
-  } catch (err) { 
-    res.status(500).json({ success: false, message: 'Registration failed' }); 
-  }
-});
-
-app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ success: false, message: 'Email and password required' });
-    if (!isValidEmail(email)) return res.status(400).json({ success: false, message: 'Please enter a valid email address' });
-
-    const user = await db.collection('users').findOne({ email: email.toLowerCase() });
-    if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials' });
-
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) return res.status(401).json({ success: false, message: 'Invalid credentials' });
-
-    const { accessToken, refreshToken } = generateTokens(user._id, user.email, user.name, user.role);
-    await storeRefreshToken(user._id, refreshToken);
-    
-    const { password: _, ...userWithoutPassword } = user;
-    res.json({ success: true, user: userWithoutPassword, accessToken, refreshToken });
-  } catch (err) { 
-    res.status(500).json({ success: false, message: 'Login failed' }); 
-  }
-});
-
-app.get('/api/auth/verify', authenticateToken, async (req, res) => {
-  const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) }, { projection: { password: 0 } });
-  res.json({ success: true, user });
-});
-
-app.delete('/api/auth/delete', authenticateToken, async (req, res) => {
-  const { password } = req.body;
-  if (!password) return res.status(400).json({ success: false, message: 'Password required' });
-  const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) });
-  if (!user) return res.status(404).json({ success: false });
-  const match = await bcrypt.compare(password, user.password);
-  if (!match) return res.status(401).json({ success: false, message: 'Incorrect password' });
-  
-  // Delete user's refresh tokens
-  await db.collection('refresh_tokens').deleteMany({ user_id: user._id });
-  await db.collection('users').deleteOne({ _id: user._id });
-  res.json({ success: true });
-});
-
-app.get('/api/auth/profile', authenticateToken, async (req, res) => {
-  const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) }, { projection: { password: 0 } });
-  res.json({ success: true, user });
-});
-
-app.put('/api/auth/profile', authenticateToken, async (req, res) => {
-  const { name, phone } = req.body;
-  const update = {};
-  if (name) update.name = name;
-  if (phone) update.phone = phone;
-  update.updated_at = new Date();
-  await db.collection('users').updateOne({ _id: new ObjectId(req.user.id) }, { $set: update });
-  const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) }, { projection: { password: 0 } });
-  const { accessToken, refreshToken } = generateTokens(user._id, user.email, user.name, user.role);
-  
-  // Update refresh token
-  await db.collection('refresh_tokens').deleteMany({ user_id: user._id });
-  await storeRefreshToken(user._id, refreshToken);
-  
-  res.json({ success: true, user, accessToken, refreshToken });
-});
-
-app.get('/api/auth/orders', authenticateToken, async (req, res) => {
-  const orders = await db.collection('orders').find({ customer_email: req.user.email }).sort({ created_at: -1 }).toArray();
-  res.json({ success: true, orders });
-});
-
 // ==================== PUBLIC ORDER TRACKING ====================
 app.get('/api/orders/track', async (req, res) => {
   try {
@@ -614,18 +413,18 @@ const PASSKEY = process.env.PASSKEY;
 const SHORTCODE = process.env.SHORTCODE || '174379';
 const baseURL = 'https://sandbox.safaricom.co.ke';
 
-let accessToken = null;
-let tokenExpiry = 0;
+let mpesaAccessToken = null;
+let mpesaTokenExpiry = 0;
 
-async function getAccessToken() {
-  if (accessToken && Date.now() < tokenExpiry - 60000) return accessToken;
+async function getMpesaAccessToken() {
+  if (mpesaAccessToken && Date.now() < mpesaTokenExpiry - 60000) return mpesaAccessToken;
   const auth = Buffer.from(`${CONSUMER_KEY}:${CONSUMER_SECRET}`).toString('base64');
   const res = await axios.get(`${baseURL}/oauth/v1/generate?grant_type=client_credentials`, {
     headers: { Authorization: `Basic ${auth}` }
   });
-  accessToken = res.data.access_token;
-  tokenExpiry = Date.now() + (res.data.expires_in * 1000);
-  return accessToken;
+  mpesaAccessToken = res.data.access_token;
+  mpesaTokenExpiry = Date.now() + (res.data.expires_in * 1000);
+  return mpesaAccessToken;
 }
 
 function formatPhone(phone) {
@@ -640,7 +439,7 @@ app.post('/api/stkpush', stkLimiter, async (req, res) => {
   const formattedPhone = formatPhone(phone);
   const timestamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
   const password = Buffer.from(`${SHORTCODE}${PASSKEY}${timestamp}`).toString('base64');
-  const token = await getAccessToken();
+  const token = await getMpesaAccessToken();
 
   await axios.post(`${baseURL}/mpesa/stkpush/v1/processrequest`, {
     BusinessShortCode: SHORTCODE, Password: password, Timestamp: timestamp,
@@ -767,20 +566,18 @@ app.delete('/api/db/orders/:id', requireAdmin, async (req, res) => {
 });
 
 app.get('/api/db/stats', requireAdmin, async (req, res) => {
-  const [totalOrders, totalProducts, revenueResult, pending, paid, delivered, totalUsers] = await Promise.all([
+  const [totalOrders, totalProducts, revenueResult, pending, paid, delivered] = await Promise.all([
     db.collection('orders').countDocuments(),
     db.collection('products').countDocuments(),
     db.collection('orders').aggregate([{ $match: { status: 'delivered' } }, { $group: { _id: null, total: { $sum: '$total' } } }]).toArray(),
     db.collection('orders').countDocuments({ status: 'pending' }),
     db.collection('orders').countDocuments({ status: 'paid' }),
-    db.collection('orders').countDocuments({ status: 'delivered' }),
-    db.collection('users').countDocuments()
+    db.collection('orders').countDocuments({ status: 'delivered' })
   ]);
-  res.json({ success: true, stats: { totalOrders, totalProducts, totalRevenue: revenueResult[0]?.total || 0, pendingOrders: pending, paidOrders: paid, deliveredOrders: delivered, totalUsers } });
+  res.json({ success: true, stats: { totalOrders, totalProducts, totalRevenue: revenueResult[0]?.total || 0, pendingOrders: pending, paidOrders: paid, deliveredOrders: delivered } });
 });
 
 // ==================== DELIVERY SETTINGS ====================
-// PUBLIC endpoint for checkout (no authentication required)
 app.get('/api/delivery-settings', async (req, res) => {
   try {
     const settings = await db.collection('settings').findOne({ key: 'delivery' });
@@ -790,7 +587,6 @@ app.get('/api/delivery-settings', async (req, res) => {
   }
 });
 
-// ADMIN endpoint for updating settings (requires authentication)
 app.get('/api/admin/delivery-settings', requireAdmin, async (req, res) => {
   const settings = await db.collection('settings').findOne({ key: 'delivery' });
   res.json({ success: true, settings: settings?.value || { delivery_fee: 150, free_delivery_threshold: 3000, delivery_enabled: true } });
@@ -813,7 +609,7 @@ app.post('/api/admin/verify', async (req, res) => {
   else res.json({ success: password === ADMIN_PASSWORD });
 });
 
-// ==================== OTP ====================
+// ==================== OTP (for email verification) ====================
 app.post('/api/send-email-otp', otpLimiter, async (req, res) => {
   const { email, otp } = req.body;
   if (!isValidEmail(email)) return res.json({ success: false, message: 'Invalid email format' });
@@ -847,7 +643,6 @@ connectDB().then(() => {
   app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📧 Email: ${BREVO_API_KEY ? '✅' : '❌'}`);
-    console.log(`🔐 Auth: ✅ JWT with Refresh Tokens`);
     console.log(`🗄️ MongoDB: ✅ Connected`);
     console.log(``);
     console.log(`📨 EMAIL FLOW:`);
