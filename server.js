@@ -30,9 +30,20 @@ app.use(compression());
 
 // ==================== JWT CONFIG ====================
 const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || JWT_SECRET + '_refresh';
 const JWT_EXPIRY = '7d';
+const JWT_REFRESH_EXPIRY = '30d';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const CASHIER_PASSWORD = process.env.CASHIER_PASSWORD || 'cashier123';
+
+// Store refresh tokens (in production, use Redis or MongoDB)
+let refreshTokens = [];
+
+// ==================== EMAIL VALIDATION ====================
+function isValidEmail(email) {
+  const emailRegex = /^[^\s@]+@([^\s@]+\.)+[^\s@]+$/;
+  return emailRegex.test(email);
+}
 
 // ==================== RATE LIMITING ====================
 const generalLimiter = rateLimit({
@@ -89,6 +100,7 @@ app.use('/api/stkpush', stkLimiter);
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', authLimiter);
 app.use('/api/auth/delete', authLimiter);
+app.use('/api/auth/refresh', generalLimiter);
 app.use('/api/db/orders', orderCreateLimiter);
 app.use('/api/db/', adminLimiter);
 app.use('/api/admin/', adminLimiter);
@@ -146,6 +158,7 @@ async function connectDB() {
     await db.collection('users').createIndex({ email: 1 }, { unique: true });
     await db.collection('pending_orders').createIndex({ created_at: 1 }, { expireAfterSeconds: 3600 });
     await db.collection('otps').createIndex({ created_at: 1 }, { expireAfterSeconds: 600 });
+    await db.collection('refresh_tokens').createIndex({ created_at: 1 }, { expireAfterSeconds: 2592000 }); // 30 days
 
     const productCount = await db.collection('products').countDocuments();
     if (productCount === 0) {
@@ -354,7 +367,7 @@ async function sendOrderDeliveredEmail(orderData) {
       <tr style="border-bottom:1px solid #1c1c28;">
         <td style="padding:6px 0;color:#ddd;">${escapeHtml(productName)} x${quantity}</td>
         <td style="text-align:right;color:#2ecc71;">KES ${(productPrice * quantity).toLocaleString()}</td>
-      </tr>
+       </tr>
     `;
   }).join('');
 
@@ -416,12 +429,84 @@ app.post('/api/admin/login', async (req, res) => {
   res.status(401).json({ success: false, message: 'Invalid password' });
 });
 
-// ==================== USER AUTH ====================
+// ==================== USER AUTH WITH REFRESH TOKEN ====================
+// Generate tokens
+function generateTokens(userId, email, name, role) {
+  const accessToken = jwt.sign({ id: userId, email, name, role }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+  const refreshToken = jwt.sign({ id: userId, email, role }, JWT_REFRESH_SECRET, { expiresIn: JWT_REFRESH_EXPIRY });
+  return { accessToken, refreshToken };
+}
+
+// Store refresh token in database
+async function storeRefreshToken(userId, refreshToken) {
+  await db.collection('refresh_tokens').insertOne({
+    user_id: userId,
+    token: refreshToken,
+    created_at: new Date()
+  });
+}
+
+// Verify refresh token
+async function verifyRefreshToken(refreshToken) {
+  try {
+    const decoded = jwt.verify(refreshToken, JWT_REFRESH_SECRET);
+    const stored = await db.collection('refresh_tokens').findOne({ 
+      token: refreshToken, 
+      user_id: decoded.id 
+    });
+    if (!stored) return null;
+    return decoded;
+  } catch (err) {
+    return null;
+  }
+}
+
+// Refresh token endpoint
+app.post('/api/auth/refresh', async (req, res) => {
+  const { refreshToken } = req.body;
+  if (!refreshToken) {
+    return res.status(401).json({ success: false, message: 'Refresh token required' });
+  }
+  
+  const decoded = await verifyRefreshToken(refreshToken);
+  if (!decoded) {
+    return res.status(403).json({ success: false, message: 'Invalid or expired refresh token' });
+  }
+  
+  const user = await db.collection('users').findOne({ _id: new ObjectId(decoded.id) });
+  if (!user) {
+    return res.status(404).json({ success: false, message: 'User not found' });
+  }
+  
+  // Generate new tokens
+  const { accessToken, refreshToken: newRefreshToken } = generateTokens(user._id, user.email, user.name, user.role);
+  
+  // Store new refresh token and delete old one
+  await db.collection('refresh_tokens').deleteOne({ token: refreshToken });
+  await storeRefreshToken(user._id, newRefreshToken);
+  
+  res.json({ 
+    success: true, 
+    accessToken, 
+    refreshToken: newRefreshToken,
+    user: { _id: user._id, name: user.name, email: user.email, phone: user.phone, role: user.role }
+  });
+});
+
+// Logout endpoint - invalidate refresh token
+app.post('/api/auth/logout', authenticateToken, async (req, res) => {
+  const { refreshToken } = req.body;
+  if (refreshToken) {
+    await db.collection('refresh_tokens').deleteOne({ token: refreshToken });
+  }
+  res.json({ success: true, message: 'Logged out successfully' });
+});
+
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, phone, email, password } = req.body;
     if (!name || !phone || !email || !password) return res.status(400).json({ success: false, message: 'All fields required' });
-    if (!email.includes('@')) return res.status(400).json({ success: false, message: 'Valid email required' });
+    if (!isValidEmail(email)) return res.status(400).json({ success: false, message: 'Please enter a valid email address' });
     if (password.length < 6) return res.status(400).json({ success: false, message: 'Password min 6 characters' });
 
     const existing = await db.collection('users').findOne({ email: email.toLowerCase() });
@@ -430,16 +515,22 @@ app.post('/api/auth/register', async (req, res) => {
     const hashed = await bcrypt.hash(password, 10);
     const user = { name, phone, email: email.toLowerCase(), password: hashed, role: 'user', created_at: new Date() };
     const result = await db.collection('users').insertOne(user);
-    const token = jwt.sign({ id: result.insertedId, email: user.email, name: user.name, role: 'user' }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+    
+    const { accessToken, refreshToken } = generateTokens(result.insertedId, user.email, user.name, user.role);
+    await storeRefreshToken(result.insertedId, refreshToken);
+    
     const { password: _, ...userWithoutPassword } = user;
-    res.json({ success: true, user: userWithoutPassword, token });
-  } catch (err) { res.status(500).json({ success: false, message: 'Registration failed' }); }
+    res.json({ success: true, user: userWithoutPassword, accessToken, refreshToken });
+  } catch (err) { 
+    res.status(500).json({ success: false, message: 'Registration failed' }); 
+  }
 });
 
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ success: false, message: 'Email and password required' });
+    if (!isValidEmail(email)) return res.status(400).json({ success: false, message: 'Please enter a valid email address' });
 
     const user = await db.collection('users').findOne({ email: email.toLowerCase() });
     if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials' });
@@ -447,10 +538,14 @@ app.post('/api/auth/login', async (req, res) => {
     const match = await bcrypt.compare(password, user.password);
     if (!match) return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
-    const token = jwt.sign({ id: user._id, email: user.email, name: user.name, role: 'user' }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+    const { accessToken, refreshToken } = generateTokens(user._id, user.email, user.name, user.role);
+    await storeRefreshToken(user._id, refreshToken);
+    
     const { password: _, ...userWithoutPassword } = user;
-    res.json({ success: true, user: userWithoutPassword, token });
-  } catch (err) { res.status(500).json({ success: false, message: 'Login failed' }); }
+    res.json({ success: true, user: userWithoutPassword, accessToken, refreshToken });
+  } catch (err) { 
+    res.status(500).json({ success: false, message: 'Login failed' }); 
+  }
 });
 
 app.get('/api/auth/verify', authenticateToken, async (req, res) => {
@@ -465,6 +560,9 @@ app.delete('/api/auth/delete', authenticateToken, async (req, res) => {
   if (!user) return res.status(404).json({ success: false });
   const match = await bcrypt.compare(password, user.password);
   if (!match) return res.status(401).json({ success: false, message: 'Incorrect password' });
+  
+  // Delete user's refresh tokens
+  await db.collection('refresh_tokens').deleteMany({ user_id: user._id });
   await db.collection('users').deleteOne({ _id: user._id });
   res.json({ success: true });
 });
@@ -482,8 +580,13 @@ app.put('/api/auth/profile', authenticateToken, async (req, res) => {
   update.updated_at = new Date();
   await db.collection('users').updateOne({ _id: new ObjectId(req.user.id) }, { $set: update });
   const user = await db.collection('users').findOne({ _id: new ObjectId(req.user.id) }, { projection: { password: 0 } });
-  const token = jwt.sign({ id: user._id, email: user.email, name: user.name, role: 'user' }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
-  res.json({ success: true, user, token });
+  const { accessToken, refreshToken } = generateTokens(user._id, user.email, user.name, user.role);
+  
+  // Update refresh token
+  await db.collection('refresh_tokens').deleteMany({ user_id: user._id });
+  await storeRefreshToken(user._id, refreshToken);
+  
+  res.json({ success: true, user, accessToken, refreshToken });
 });
 
 app.get('/api/auth/orders', authenticateToken, async (req, res) => {
@@ -496,6 +599,7 @@ app.get('/api/orders/track', async (req, res) => {
   try {
     const { email } = req.query;
     if (!email) return res.status(400).json({ success: false, message: 'Email required' });
+    if (!isValidEmail(email)) return res.status(400).json({ success: false, message: 'Please enter a valid email address' });
     const orders = await db.collection('orders').find({ customer_email: email.toLowerCase() }).sort({ created_at: -1 }).toArray();
     res.json({ success: true, orders });
   } catch (err) {
@@ -712,6 +816,7 @@ app.post('/api/admin/verify', async (req, res) => {
 // ==================== OTP ====================
 app.post('/api/send-email-otp', otpLimiter, async (req, res) => {
   const { email, otp } = req.body;
+  if (!isValidEmail(email)) return res.json({ success: false, message: 'Invalid email format' });
   await db.collection('otps').updateOne({ email }, { $set: { otp, created_at: new Date() } }, { upsert: true });
   try {
     await axios.post('https://api.brevo.com/v3/smtp/email', {
@@ -742,7 +847,7 @@ connectDB().then(() => {
   app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📧 Email: ${BREVO_API_KEY ? '✅' : '❌'}`);
-    console.log(`🔐 Auth: ✅ JWT`);
+    console.log(`🔐 Auth: ✅ JWT with Refresh Tokens`);
     console.log(`🗄️ MongoDB: ✅ Connected`);
     console.log(``);
     console.log(`📨 EMAIL FLOW:`);
