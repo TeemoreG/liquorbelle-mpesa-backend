@@ -24,7 +24,7 @@ app.use(compression());
 
 // ==================== ADMIN CONFIG ====================
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
-const CASHIER_PASSWORD = process.env.CASHIER_PASSWORD || 'cashier123';
+let CASHIER_PASSWORD = process.env.CASHIER_PASSWORD || 'admin123';
 
 // ==================== EMAIL VALIDATION ====================
 function isValidEmail(email) {
@@ -80,7 +80,25 @@ app.use('/api/db/orders', orderCreateLimiter);
 app.use('/api/db/', adminLimiter);
 app.use('/api/admin/', adminLimiter);
 
-// ==================== ADMIN MIDDLEWARE ====================
+// ==================== ADMIN/CASHIER MIDDLEWARE ====================
+function requireAdminOrCashier(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) {
+    return res.status(401).json({ success: false, message: 'Authentication token required' });
+  }
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    if (decoded.role !== 'admin' && decoded.role !== 'cashier') {
+      return res.status(403).json({ success: false, message: 'Access denied. Admin or Cashier role required.' });
+    }
+    req.user = decoded;
+    next();
+  } catch (err) {
+    return res.status(403).json({ success: false, message: 'Invalid or expired token' });
+  }
+}
+
 function requireAdmin(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -123,8 +141,21 @@ async function connectDB() {
     await db.collection('orders').createIndex({ customer_email: 1 });
     await db.collection('orders').createIndex({ created_at: -1 });
     await db.collection('settings').createIndex({ key: 1 });
+    await db.collection('admin_settings').createIndex({ key: 1 });
     await db.collection('pending_orders').createIndex({ created_at: 1 }, { expireAfterSeconds: 3600 });
     await db.collection('otps').createIndex({ created_at: 1 }, { expireAfterSeconds: 600 });
+
+    // Load saved passwords from database
+    const adminSettings = await db.collection('admin_settings').findOne({ key: 'passwords' });
+    if (adminSettings && adminSettings.value) {
+      if (adminSettings.value.adminPassword) {
+        process.env.ADMIN_PASSWORD = adminSettings.value.adminPassword;
+      }
+      if (adminSettings.value.cashierPassword) {
+        CASHIER_PASSWORD = adminSettings.value.cashierPassword;
+      }
+      console.log('✅ Loaded passwords from database');
+    }
 
     const productCount = await db.collection('products').countDocuments();
     if (productCount === 0) {
@@ -135,6 +166,24 @@ async function connectDB() {
       console.log(`✅ Products already exist (${productCount} products), skipping seed`);
     }
     console.log('✅ Database ready');
+    
+    // Auto-cleanup unpaid pending orders (35 seconds)
+    setInterval(async () => {
+      try {
+        if (!db) return;
+        const cutoffTime = new Date(Date.now() - 35000);
+        const result = await db.collection('pending_orders').deleteMany({
+          paid: false,
+          created_at: { $lt: cutoffTime }
+        });
+        if (result.deletedCount > 0) {
+          console.log(`🧹 Auto-cleaned ${result.deletedCount} unpaid pending orders (older than 35 seconds)`);
+        }
+      } catch (err) {
+        console.error('Auto-cleanup error:', err.message);
+      }
+    }, 30000);
+    
   } catch (err) {
     console.error('MongoDB connection error:', err);
     setTimeout(connectDB, 5000);
@@ -176,7 +225,7 @@ async function sendCodOrderReceivedEmail(orderData) {
       <tr style="border-bottom:1px solid #1c1c28;">
         <td style="padding:12px 0;"><span style="color:#e0e0e0;">${escapeHtml(productName)} x${productQty}</span><br><span style="color:#555;font-size:11px;">${escapeHtml(productSize)}</span></td>
         <td style="padding:12px 0;text-align:right;color:#f0a500;">KES ${(productPrice * productQty).toLocaleString()}</td>
-      </td>
+       </td>
     `;
   }).join('');
 
@@ -382,15 +431,62 @@ async function sendOrderDeliveredEmail(orderData) {
 // ==================== ADMIN LOGIN ====================
 app.post('/api/admin/login', async (req, res) => {
   const { password } = req.body;
-  if (password === ADMIN_PASSWORD) {
+  
+  // Load current passwords from database
+  const adminSettings = await db.collection('admin_settings').findOne({ key: 'passwords' });
+  let currentAdminPassword = ADMIN_PASSWORD;
+  let currentCashierPassword = CASHIER_PASSWORD;
+  
+  if (adminSettings && adminSettings.value) {
+    currentAdminPassword = adminSettings.value.adminPassword || ADMIN_PASSWORD;
+    currentCashierPassword = adminSettings.value.cashierPassword || CASHIER_PASSWORD;
+  }
+  
+  if (password === currentAdminPassword) {
     const token = jwt.sign({ role: 'admin' }, JWT_SECRET, { expiresIn: '1d' });
     return res.json({ success: true, token, role: 'admin' });
   }
-  if (password === CASHIER_PASSWORD) {
+  if (password === currentCashierPassword) {
     const token = jwt.sign({ role: 'cashier' }, JWT_SECRET, { expiresIn: '1d' });
     return res.json({ success: true, token, role: 'cashier' });
   }
   res.status(401).json({ success: false, message: 'Invalid password' });
+});
+
+// ==================== UPDATE PASSWORDS ====================
+app.post('/api/admin/update-passwords', requireAdmin, async (req, res) => {
+  try {
+    const { adminPassword, cashierPassword } = req.body;
+    
+    // Update in database
+    await db.collection('admin_settings').updateOne(
+      { key: 'passwords' },
+      { 
+        $set: { 
+          value: { 
+            adminPassword: adminPassword || ADMIN_PASSWORD,
+            cashierPassword: cashierPassword || CASHIER_PASSWORD
+          },
+          updated_at: new Date()
+        }
+      },
+      { upsert: true }
+    );
+    
+    // Update runtime variables
+    if (adminPassword) {
+      process.env.ADMIN_PASSWORD = adminPassword;
+    }
+    if (cashierPassword) {
+      CASHIER_PASSWORD = cashierPassword;
+    }
+    
+    console.log('✅ Passwords updated successfully');
+    res.json({ success: true, message: 'Passwords updated successfully' });
+  } catch (err) {
+    console.error('Error updating passwords:', err);
+    res.status(500).json({ success: false, message: 'Failed to update passwords' });
+  }
 });
 
 // ==================== PUBLIC ORDER TRACKING ====================
@@ -597,16 +693,61 @@ app.post('/api/admin/delivery-settings', requireAdmin, async (req, res) => {
   res.json({ success: true });
 });
 
-app.get('/api/admin/recent-orders', requireAdmin, async (req, res) => {
-  const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const orders = await db.collection('orders').find({ created_at: { $gte: last24h } }).sort({ created_at: -1 }).toArray();
-  res.json({ success: true, orders });
+// ==================== CASHIER/ADMIN ORDERS ENDPOINTS ====================
+app.get('/api/admin/all-orders', requireAdminOrCashier, async (req, res) => {
+  try {
+    const { limit = 1000, status, days } = req.query;
+    
+    let query = {};
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+    if (days && days !== 'all') {
+      const daysAgo = new Date(Date.now() - parseInt(days) * 24 * 60 * 60 * 1000);
+      query.created_at = { $gte: daysAgo };
+    }
+    
+    const orders = await db.collection('orders')
+      .find(query)
+      .sort({ created_at: -1 })
+      .limit(parseInt(limit))
+      .toArray();
+    
+    res.json({ success: true, orders, count: orders.length });
+  } catch (err) {
+    console.error('Error fetching orders:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch orders' });
+  }
+});
+
+app.get('/api/admin/recent-orders', requireAdminOrCashier, async (req, res) => {
+  try {
+    const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const orders = await db.collection('orders')
+      .find({ created_at: { $gte: last24h } })
+      .sort({ created_at: -1 })
+      .toArray();
+    res.json({ success: true, orders });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch recent orders' });
+  }
 });
 
 app.post('/api/admin/verify', async (req, res) => {
   const { password, type } = req.body;
-  if (type === 'orders') res.json({ success: password === CASHIER_PASSWORD });
-  else res.json({ success: password === ADMIN_PASSWORD });
+  
+  // Load current passwords from database
+  const adminSettings = await db.collection('admin_settings').findOne({ key: 'passwords' });
+  let currentAdminPassword = ADMIN_PASSWORD;
+  let currentCashierPassword = CASHIER_PASSWORD;
+  
+  if (adminSettings && adminSettings.value) {
+    currentAdminPassword = adminSettings.value.adminPassword || ADMIN_PASSWORD;
+    currentCashierPassword = adminSettings.value.cashierPassword || CASHIER_PASSWORD;
+  }
+  
+  if (type === 'orders') res.json({ success: password === currentCashierPassword });
+  else res.json({ success: password === currentAdminPassword });
 });
 
 // ==================== OTP (for email verification) ====================
@@ -648,5 +789,9 @@ connectDB().then(() => {
     console.log(`📨 EMAIL FLOW:`);
     console.log(`   COD: Place Order → "Order Received (Rider on way)" | Delivered → "Order Delivered Successfully"`);
     console.log(`   M-PESA: Payment Callback → "Order Received (Rider on way)" | Delivered → "Order Delivered Successfully"`);
+    console.log(``);
+    console.log(`🧹 AUTO-CLEANUP: Unpaid pending orders older than 35 seconds will be automatically removed`);
+    console.log(`👥 ADMIN/CASHIER: Both roles can access orders`);
+    console.log(`🔐 Passwords stored in MongoDB (admins can change them)`);
   });
 });
