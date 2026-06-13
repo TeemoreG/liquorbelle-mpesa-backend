@@ -464,25 +464,40 @@ async function sendOrderDeliveredEmail(orderData) {
   } catch (err) { console.error('Email error:', err.message); }
 }
 
-// ==================== ADMIN LOGIN ====================
+// ==================== ADMIN LOGIN (ONLY for admin panel) ====================
 app.post('/api/admin/login', async (req, res) => {
   const { password } = req.body;
   
-  // Get current active passwords (ONLY from database after they are loaded)
+  // Get current active passwords
   const activePasswords = await getActivePasswords();
   
-  console.log(`Login attempt - Checking credentials`);
+  console.log(`Admin login attempt`);
   
-  // Only check against the active passwords (no fallback to env)
+  // ONLY allow admin password - NOT cashier password
   if (activePasswords.adminPassword && password === activePasswords.adminPassword) {
     const token = jwt.sign({ role: 'admin' }, JWT_SECRET, { expiresIn: '1d' });
     return res.json({ success: true, token, role: 'admin' });
   }
+  
+  res.status(401).json({ success: false, message: 'Invalid admin password' });
+});
+
+// ==================== CASHIER LOGIN (ONLY for order manager) ====================
+app.post('/api/cashier/login', async (req, res) => {
+  const { password } = req.body;
+  
+  // Get current active passwords
+  const activePasswords = await getActivePasswords();
+  
+  console.log(`Cashier login attempt`);
+  
+  // ONLY allow cashier password - NOT admin password
   if (activePasswords.cashierPassword && password === activePasswords.cashierPassword) {
     const token = jwt.sign({ role: 'cashier' }, JWT_SECRET, { expiresIn: '1d' });
     return res.json({ success: true, token, role: 'cashier' });
   }
-  res.status(401).json({ success: false, message: 'Invalid password' });
+  
+  res.status(401).json({ success: false, message: 'Invalid cashier password' });
 });
 
 // ==================== UPDATE PASSWORDS (FIXED) ====================
@@ -842,7 +857,7 @@ connectDB().then(() => {
     console.log(`   M-PESA: Payment Callback → "Order Received (Rider on way)" | Delivered → "Order Delivered Successfully"`);
     console.log(``);
     console.log(`🧹 AUTO-CLEANUP: Unpaid pending orders older than 35 seconds will be automatically removed`);
-    console.log(`👥 ADMIN/CASHIER: Both roles can access orders`);
+    console.log(`👥 ADMIN/CASHIER: SEPARATE login endpoints - admin uses /api/admin/login, cashier uses /api/cashier/login`);
     console.log(`🔐 Passwords stored in MongoDB (admins can change them via Settings tab)`);
     console.log(`⚠️  Only ONE password per role works now (no fallback to old passwords)`);
   });
