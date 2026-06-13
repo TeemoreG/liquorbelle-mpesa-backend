@@ -23,7 +23,7 @@ app.use(express.json());
 app.use(compression());
 
 // ==================== ADMIN CONFIG ====================
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+const ENV_ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 let CASHIER_PASSWORD = process.env.CASHIER_PASSWORD || 'admin123';
 
 // ==================== EMAIL VALIDATION ====================
@@ -130,6 +130,51 @@ const MONGODB_URI = process.env.MONGODB_URI;
 let db;
 let client;
 
+// Global variables for active passwords (only from database after first load)
+let activeAdminPassword = null;
+let activeCashierPassword = null;
+let passwordsLoaded = false;
+
+async function loadPasswordsFromDB() {
+  try {
+    const adminSettings = await db.collection('admin_settings').findOne({ key: 'passwords' });
+    if (adminSettings && adminSettings.value) {
+      // ONLY use database passwords - ignore environment variables if DB has passwords
+      activeAdminPassword = adminSettings.value.adminPassword;
+      activeCashierPassword = adminSettings.value.cashierPassword;
+      console.log('✅ Loaded passwords from database (using DB passwords only)');
+      console.log(`   Admin password: ${activeAdminPassword ? '✓ Set' : '✗ Not set'}`);
+      console.log(`   Cashier password: ${activeCashierPassword ? '✓ Set' : '✗ Not set'}`);
+      passwordsLoaded = true;
+      return true;
+    } else {
+      // No passwords in database yet, use environment variables as initial
+      activeAdminPassword = ENV_ADMIN_PASSWORD;
+      activeCashierPassword = CASHIER_PASSWORD;
+      console.log('📝 No passwords in database, using environment variables as initial');
+      console.log(`   Admin password from env: ${ENV_ADMIN_PASSWORD ? '✓ Set' : '✗ Not set'}`);
+      passwordsLoaded = true;
+      return false;
+    }
+  } catch (err) {
+    console.error('Error loading passwords from DB:', err.message);
+    // Fallback to environment variables
+    activeAdminPassword = ENV_ADMIN_PASSWORD;
+    activeCashierPassword = CASHIER_PASSWORD;
+    return false;
+  }
+}
+
+async function getActivePasswords() {
+  if (!passwordsLoaded) {
+    await loadPasswordsFromDB();
+  }
+  return {
+    adminPassword: activeAdminPassword,
+    cashierPassword: activeCashierPassword
+  };
+}
+
 async function connectDB() {
   try {
     client = new MongoClient(MONGODB_URI);
@@ -145,17 +190,8 @@ async function connectDB() {
     await db.collection('pending_orders').createIndex({ created_at: 1 }, { expireAfterSeconds: 3600 });
     await db.collection('otps').createIndex({ created_at: 1 }, { expireAfterSeconds: 600 });
 
-    // Load saved passwords from database
-    const adminSettings = await db.collection('admin_settings').findOne({ key: 'passwords' });
-    if (adminSettings && adminSettings.value) {
-      if (adminSettings.value.adminPassword) {
-        process.env.ADMIN_PASSWORD = adminSettings.value.adminPassword;
-      }
-      if (adminSettings.value.cashierPassword) {
-        CASHIER_PASSWORD = adminSettings.value.cashierPassword;
-      }
-      console.log('✅ Loaded passwords from database');
-    }
+    // Load passwords from database FIRST
+    await loadPasswordsFromDB();
 
     const productCount = await db.collection('products').countDocuments();
     if (productCount === 0) {
@@ -180,7 +216,7 @@ async function connectDB() {
           console.log(`🧹 Auto-cleaned ${result.deletedCount} unpaid pending orders (older than 35 seconds)`);
         }
       } catch (err) {
-        console.error('Auto-cleanup error:', err.message);
+        // Silent fail
       }
     }, 30000);
     
@@ -432,21 +468,17 @@ async function sendOrderDeliveredEmail(orderData) {
 app.post('/api/admin/login', async (req, res) => {
   const { password } = req.body;
   
-  // Load current passwords from database
-  const adminSettings = await db.collection('admin_settings').findOne({ key: 'passwords' });
-  let currentAdminPassword = ADMIN_PASSWORD;
-  let currentCashierPassword = CASHIER_PASSWORD;
+  // Get current active passwords (ONLY from database after they are loaded)
+  const activePasswords = await getActivePasswords();
   
-  if (adminSettings && adminSettings.value) {
-    currentAdminPassword = adminSettings.value.adminPassword || ADMIN_PASSWORD;
-    currentCashierPassword = adminSettings.value.cashierPassword || CASHIER_PASSWORD;
-  }
+  console.log(`Login attempt - Checking credentials`);
   
-  if (password === currentAdminPassword) {
+  // Only check against the active passwords (no fallback to env)
+  if (activePasswords.adminPassword && password === activePasswords.adminPassword) {
     const token = jwt.sign({ role: 'admin' }, JWT_SECRET, { expiresIn: '1d' });
     return res.json({ success: true, token, role: 'admin' });
   }
-  if (password === currentCashierPassword) {
+  if (activePasswords.cashierPassword && password === activePasswords.cashierPassword) {
     const token = jwt.sign({ role: 'cashier' }, JWT_SECRET, { expiresIn: '1d' });
     return res.json({ success: true, token, role: 'cashier' });
   }
@@ -458,30 +490,53 @@ app.post('/api/admin/update-passwords', requireAdmin, async (req, res) => {
   try {
     const { adminPassword, cashierPassword } = req.body;
     
+    // Get current settings to see what's changing
+    let currentSettings = await db.collection('admin_settings').findOne({ key: 'passwords' });
+    let currentValues = currentSettings?.value || {};
+    
+    // Prepare update object - only update what was provided
+    let updateValue = {};
+    
+    if (adminPassword !== undefined && adminPassword !== '') {
+      updateValue.adminPassword = adminPassword;
+      // Update runtime variable
+      activeAdminPassword = adminPassword;
+    } else if (currentValues.adminPassword) {
+      updateValue.adminPassword = currentValues.adminPassword;
+      activeAdminPassword = currentValues.adminPassword;
+    } else {
+      updateValue.adminPassword = ENV_ADMIN_PASSWORD;
+      activeAdminPassword = ENV_ADMIN_PASSWORD;
+    }
+    
+    if (cashierPassword !== undefined && cashierPassword !== '') {
+      updateValue.cashierPassword = cashierPassword;
+      activeCashierPassword = cashierPassword;
+    } else if (currentValues.cashierPassword) {
+      updateValue.cashierPassword = currentValues.cashierPassword;
+      activeCashierPassword = currentValues.cashierPassword;
+    } else {
+      updateValue.cashierPassword = CASHIER_PASSWORD;
+      activeCashierPassword = CASHIER_PASSWORD;
+    }
+    
+    updateValue.updated_at = new Date();
+    
     // Update in database
     await db.collection('admin_settings').updateOne(
       { key: 'passwords' },
-      { 
-        $set: { 
-          value: { 
-            adminPassword: adminPassword || ADMIN_PASSWORD,
-            cashierPassword: cashierPassword || CASHIER_PASSWORD
-          },
-          updated_at: new Date()
-        }
-      },
+      { $set: { value: updateValue, updated_at: new Date() } },
       { upsert: true }
     );
     
-    // Update runtime variables
-    if (adminPassword) {
-      process.env.ADMIN_PASSWORD = adminPassword;
-    }
-    if (cashierPassword) {
-      CASHIER_PASSWORD = cashierPassword;
-    }
+    // Mark that passwords are loaded
+    passwordsLoaded = true;
     
     console.log('✅ Passwords updated successfully');
+    console.log(`   Admin password changed: ${adminPassword ? 'YES' : 'NO'}`);
+    console.log(`   Cashier password changed: ${cashierPassword ? 'YES' : 'NO'}`);
+    console.log(`   New active passwords set in memory`);
+    
     res.json({ success: true, message: 'Passwords updated successfully' });
   } catch (err) {
     console.error('Error updating passwords:', err);
@@ -735,19 +790,10 @@ app.get('/api/admin/recent-orders', requireAdminOrCashier, async (req, res) => {
 
 app.post('/api/admin/verify', async (req, res) => {
   const { password, type } = req.body;
+  const activePasswords = await getActivePasswords();
   
-  // Load current passwords from database
-  const adminSettings = await db.collection('admin_settings').findOne({ key: 'passwords' });
-  let currentAdminPassword = ADMIN_PASSWORD;
-  let currentCashierPassword = CASHIER_PASSWORD;
-  
-  if (adminSettings && adminSettings.value) {
-    currentAdminPassword = adminSettings.value.adminPassword || ADMIN_PASSWORD;
-    currentCashierPassword = adminSettings.value.cashierPassword || CASHIER_PASSWORD;
-  }
-  
-  if (type === 'orders') res.json({ success: password === currentCashierPassword });
-  else res.json({ success: password === currentAdminPassword });
+  if (type === 'orders') res.json({ success: password === activePasswords.cashierPassword });
+  else res.json({ success: password === activePasswords.adminPassword });
 });
 
 // ==================== OTP (for email verification) ====================
@@ -792,6 +838,7 @@ connectDB().then(() => {
     console.log(``);
     console.log(`🧹 AUTO-CLEANUP: Unpaid pending orders older than 35 seconds will be automatically removed`);
     console.log(`👥 ADMIN/CASHIER: Both roles can access orders`);
-    console.log(`🔐 Passwords stored in MongoDB (admins can change them)`);
+    console.log(`🔐 Passwords stored in MongoDB (admins can change them via Settings tab)`);
+    console.log(`⚠️  Only ONE password per role works now (no fallback to old passwords)`);
   });
 });
