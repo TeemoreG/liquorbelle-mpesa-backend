@@ -261,7 +261,7 @@ async function sendCodOrderReceivedEmail(orderData) {
       <tr style="border-bottom:1px solid #1c1c28;">
         <td style="padding:12px 0;"><span style="color:#e0e0e0;">${escapeHtml(productName)} x${productQty}</span><br><span style="color:#555;font-size:11px;">${escapeHtml(productSize)}</span></td>
         <td style="padding:12px 0;text-align:right;color:#f0a500;">KES ${(productPrice * productQty).toLocaleString()}</td>
-       </td>
+      </tr>
     `;
   }).join('');
 
@@ -485,59 +485,64 @@ app.post('/api/admin/login', async (req, res) => {
   res.status(401).json({ success: false, message: 'Invalid password' });
 });
 
-// ==================== UPDATE PASSWORDS ====================
+// ==================== UPDATE PASSWORDS (FIXED) ====================
 app.post('/api/admin/update-passwords', requireAdmin, async (req, res) => {
   try {
     const { adminPassword, cashierPassword } = req.body;
     
     // Get current settings to see what's changing
     let currentSettings = await db.collection('admin_settings').findOne({ key: 'passwords' });
-    let currentValues = currentSettings?.value || {};
     
-    // Prepare update object - only update what was provided
+    // Prepare update object - COMPLETELY REPLACE with new values
     let updateValue = {};
     
+    // CRITICAL FIX: When updating a password, we must OVERWRITE it completely
+    // NOT try to merge or keep old values
+    
     if (adminPassword !== undefined && adminPassword !== '') {
+      // User provided a new admin password - use it
       updateValue.adminPassword = adminPassword;
-      // Update runtime variable
-      activeAdminPassword = adminPassword;
-    } else if (currentValues.adminPassword) {
-      updateValue.adminPassword = currentValues.adminPassword;
-      activeAdminPassword = currentValues.adminPassword;
+      console.log(`   Admin password updated to new value (old was: ${currentSettings?.value?.adminPassword || 'not set'})`);
     } else {
-      updateValue.adminPassword = ENV_ADMIN_PASSWORD;
-      activeAdminPassword = ENV_ADMIN_PASSWORD;
+      // No new admin password provided - keep existing or use env
+      updateValue.adminPassword = currentSettings?.value?.adminPassword || ENV_ADMIN_PASSWORD;
     }
     
     if (cashierPassword !== undefined && cashierPassword !== '') {
+      // User provided a new cashier password - use it
       updateValue.cashierPassword = cashierPassword;
-      activeCashierPassword = cashierPassword;
-    } else if (currentValues.cashierPassword) {
-      updateValue.cashierPassword = currentValues.cashierPassword;
-      activeCashierPassword = currentValues.cashierPassword;
+      console.log(`   Cashier password updated to new value (old was: ${currentSettings?.value?.cashierPassword || 'not set'})`);
     } else {
-      updateValue.cashierPassword = CASHIER_PASSWORD;
-      activeCashierPassword = CASHIER_PASSWORD;
+      // No new cashier password provided - keep existing or use env
+      updateValue.cashierPassword = currentSettings?.value?.cashierPassword || CASHIER_PASSWORD;
     }
     
     updateValue.updated_at = new Date();
     
-    // Update in database
+    // COMPLETELY REPLACE the value object in database (no merging)
     await db.collection('admin_settings').updateOne(
       { key: 'passwords' },
       { $set: { value: updateValue, updated_at: new Date() } },
       { upsert: true }
     );
     
-    // Mark that passwords are loaded
-    passwordsLoaded = true;
+    // CRITICAL: Force reload from database to ensure runtime variables match
+    const verifySettings = await db.collection('admin_settings').findOne({ key: 'passwords' });
+    if (verifySettings && verifySettings.value) {
+      activeAdminPassword = verifySettings.value.adminPassword;
+      activeCashierPassword = verifySettings.value.cashierPassword;
+      passwordsLoaded = true;
+      console.log(`   ✓ Verified database - Admin: ${activeAdminPassword ? 'SET' : 'NOT SET'}, Cashier: ${activeCashierPassword ? 'SET' : 'NOT SET'}`);
+    } else {
+      // Fallback to what we just set
+      activeAdminPassword = updateValue.adminPassword;
+      activeCashierPassword = updateValue.cashierPassword;
+    }
     
-    console.log('✅ Passwords updated successfully');
-    console.log(`   Admin password changed: ${adminPassword ? 'YES' : 'NO'}`);
-    console.log(`   Cashier password changed: ${cashierPassword ? 'YES' : 'NO'}`);
-    console.log(`   New active passwords set in memory`);
+    console.log('✅ Passwords updated successfully in database');
+    console.log(`   New cashier password is active. Old password will NO LONGER work.`);
     
-    res.json({ success: true, message: 'Passwords updated successfully' });
+    res.json({ success: true, message: 'Passwords updated successfully. Old passwords will no longer work.' });
   } catch (err) {
     console.error('Error updating passwords:', err);
     res.status(500).json({ success: false, message: 'Failed to update passwords' });
