@@ -139,7 +139,6 @@ async function loadPasswordsFromDB() {
   try {
     const adminSettings = await db.collection('admin_settings').findOne({ key: 'passwords' });
     if (adminSettings && adminSettings.value) {
-      // ONLY use database passwords - ignore environment variables if DB has passwords
       activeAdminPassword = adminSettings.value.adminPassword;
       activeCashierPassword = adminSettings.value.cashierPassword;
       console.log('✅ Loaded passwords from database (using DB passwords only)');
@@ -148,7 +147,6 @@ async function loadPasswordsFromDB() {
       passwordsLoaded = true;
       return true;
     } else {
-      // No passwords in database yet, use environment variables as initial
       activeAdminPassword = ENV_ADMIN_PASSWORD;
       activeCashierPassword = CASHIER_PASSWORD;
       console.log('📝 No passwords in database, using environment variables as initial');
@@ -158,7 +156,6 @@ async function loadPasswordsFromDB() {
     }
   } catch (err) {
     console.error('Error loading passwords from DB:', err.message);
-    // Fallback to environment variables
     activeAdminPassword = ENV_ADMIN_PASSWORD;
     activeCashierPassword = CASHIER_PASSWORD;
     return false;
@@ -190,7 +187,6 @@ async function connectDB() {
     await db.collection('pending_orders').createIndex({ created_at: 1 }, { expireAfterSeconds: 3600 });
     await db.collection('otps').createIndex({ created_at: 1 }, { expireAfterSeconds: 600 });
 
-    // Load passwords from database FIRST
     await loadPasswordsFromDB();
 
     const productCount = await db.collection('products').countDocuments();
@@ -203,7 +199,6 @@ async function connectDB() {
     }
     console.log('✅ Database ready');
     
-    // Auto-cleanup unpaid pending orders (35 seconds)
     setInterval(async () => {
       try {
         if (!db) return;
@@ -215,9 +210,7 @@ async function connectDB() {
         if (result.deletedCount > 0) {
           console.log(`🧹 Auto-cleaned ${result.deletedCount} unpaid pending orders (older than 35 seconds)`);
         }
-      } catch (err) {
-        // Silent fail
-      }
+      } catch (err) {}
     }, 30000);
     
   } catch (err) {
@@ -464,16 +457,13 @@ async function sendOrderDeliveredEmail(orderData) {
   } catch (err) { console.error('Email error:', err.message); }
 }
 
-// ==================== ADMIN LOGIN (ONLY for admin panel) ====================
+// ==================== ADMIN LOGIN ====================
 app.post('/api/admin/login', async (req, res) => {
   const { password } = req.body;
-  
-  // Get current active passwords
   const activePasswords = await getActivePasswords();
   
   console.log(`Admin login attempt`);
   
-  // ONLY allow admin password - NOT cashier password
   if (activePasswords.adminPassword && password === activePasswords.adminPassword) {
     const token = jwt.sign({ role: 'admin' }, JWT_SECRET, { expiresIn: '1d' });
     return res.json({ success: true, token, role: 'admin' });
@@ -482,16 +472,13 @@ app.post('/api/admin/login', async (req, res) => {
   res.status(401).json({ success: false, message: 'Invalid admin password' });
 });
 
-// ==================== CASHIER LOGIN (ONLY for order manager) ====================
+// ==================== CASHIER LOGIN ====================
 app.post('/api/cashier/login', async (req, res) => {
   const { password } = req.body;
-  
-  // Get current active passwords
   const activePasswords = await getActivePasswords();
   
   console.log(`Cashier login attempt`);
   
-  // ONLY allow cashier password - NOT admin password
   if (activePasswords.cashierPassword && password === activePasswords.cashierPassword) {
     const token = jwt.sign({ role: 'cashier' }, JWT_SECRET, { expiresIn: '1d' });
     return res.json({ success: true, token, role: 'cashier' });
@@ -500,63 +487,43 @@ app.post('/api/cashier/login', async (req, res) => {
   res.status(401).json({ success: false, message: 'Invalid cashier password' });
 });
 
-// ==================== UPDATE PASSWORDS (FIXED) ====================
+// ==================== UPDATE PASSWORDS ====================
 app.post('/api/admin/update-passwords', requireAdmin, async (req, res) => {
   try {
     const { adminPassword, cashierPassword } = req.body;
-    
-    // Get current settings to see what's changing
     let currentSettings = await db.collection('admin_settings').findOne({ key: 'passwords' });
-    
-    // Prepare update object - COMPLETELY REPLACE with new values
     let updateValue = {};
     
-    // CRITICAL FIX: When updating a password, we must OVERWRITE it completely
-    // NOT try to merge or keep old values
-    
     if (adminPassword !== undefined && adminPassword !== '') {
-      // User provided a new admin password - use it
       updateValue.adminPassword = adminPassword;
-      console.log(`   Admin password updated to new value (old was: ${currentSettings?.value?.adminPassword || 'not set'})`);
+      console.log(`   Admin password updated to new value`);
     } else {
-      // No new admin password provided - keep existing or use env
       updateValue.adminPassword = currentSettings?.value?.adminPassword || ENV_ADMIN_PASSWORD;
     }
     
     if (cashierPassword !== undefined && cashierPassword !== '') {
-      // User provided a new cashier password - use it
       updateValue.cashierPassword = cashierPassword;
-      console.log(`   Cashier password updated to new value (old was: ${currentSettings?.value?.cashierPassword || 'not set'})`);
+      console.log(`   Cashier password updated to new value`);
     } else {
-      // No new cashier password provided - keep existing or use env
       updateValue.cashierPassword = currentSettings?.value?.cashierPassword || CASHIER_PASSWORD;
     }
     
     updateValue.updated_at = new Date();
     
-    // COMPLETELY REPLACE the value object in database (no merging)
     await db.collection('admin_settings').updateOne(
       { key: 'passwords' },
       { $set: { value: updateValue, updated_at: new Date() } },
       { upsert: true }
     );
     
-    // CRITICAL: Force reload from database to ensure runtime variables match
     const verifySettings = await db.collection('admin_settings').findOne({ key: 'passwords' });
     if (verifySettings && verifySettings.value) {
       activeAdminPassword = verifySettings.value.adminPassword;
       activeCashierPassword = verifySettings.value.cashierPassword;
       passwordsLoaded = true;
-      console.log(`   ✓ Verified database - Admin: ${activeAdminPassword ? 'SET' : 'NOT SET'}, Cashier: ${activeCashierPassword ? 'SET' : 'NOT SET'}`);
-    } else {
-      // Fallback to what we just set
-      activeAdminPassword = updateValue.adminPassword;
-      activeCashierPassword = updateValue.cashierPassword;
     }
     
-    console.log('✅ Passwords updated successfully in database');
-    console.log(`   New cashier password is active. Old password will NO LONGER work.`);
-    
+    console.log('✅ Passwords updated successfully');
     res.json({ success: true, message: 'Passwords updated successfully. Old passwords will no longer work.' });
   } catch (err) {
     console.error('Error updating passwords:', err);
@@ -714,6 +681,7 @@ app.post('/api/db/orders', async (req, res) => {
   res.json({ success: true, order: { _id: result.insertedId, ...order } });
 });
 
+// ==================== ADMIN ORDER STATUS UPDATE ====================
 app.put('/api/db/orders/:id/status', requireAdmin, async (req, res) => {
   const { status } = req.body;
   await db.collection('orders').updateOne({ _id: new ObjectId(req.params.id) }, { $set: { status, updated_at: new Date() } });
@@ -729,6 +697,35 @@ app.put('/api/db/orders/:id/status', requireAdmin, async (req, res) => {
     }
   }
   res.json({ success: true });
+});
+
+// ==================== CASHIER ORDER STATUS UPDATE (FIX FOR admin-orders.html) ====================
+app.put('/api/cashier/orders/:id/status', requireAdminOrCashier, async (req, res) => {
+  const { status } = req.body;
+  try {
+    await db.collection('orders').updateOne(
+      { _id: new ObjectId(req.params.id) }, 
+      { $set: { status, updated_at: new Date() } }
+    );
+    
+    if (status === 'delivered') {
+      const order = await db.collection('orders').findOne({ _id: new ObjectId(req.params.id) });
+      if (order && order.customer_email) {
+        await sendOrderDeliveredEmail({
+          orderId: order.order_number, 
+          customerName: order.customer_name,
+          items: order.items, 
+          total: order.total,
+          phone: order.phone, 
+          customerEmail: order.customer_email
+        });
+      }
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error updating order status:', err);
+    res.status(500).json({ success: false, message: 'Failed to update order status' });
+  }
 });
 
 app.delete('/api/db/orders/:id', requireAdmin, async (req, res) => {
@@ -816,7 +813,7 @@ app.post('/api/admin/verify', async (req, res) => {
   else res.json({ success: password === activePasswords.adminPassword });
 });
 
-// ==================== OTP (for email verification) ====================
+// ==================== OTP ====================
 app.post('/api/send-email-otp', otpLimiter, async (req, res) => {
   const { email, otp } = req.body;
   if (!isValidEmail(email)) return res.json({ success: false, message: 'Invalid email format' });
@@ -857,8 +854,8 @@ connectDB().then(() => {
     console.log(`   M-PESA: Payment Callback → "Order Received (Rider on way)" | Delivered → "Order Delivered Successfully"`);
     console.log(``);
     console.log(`🧹 AUTO-CLEANUP: Unpaid pending orders older than 35 seconds will be automatically removed`);
-    console.log(`👥 ADMIN/CASHIER: SEPARATE login endpoints - admin uses /api/admin/login, cashier uses /api/cashier/login`);
-    console.log(`🔐 Passwords stored in MongoDB (admins can change them via Settings tab)`);
-    console.log(`⚠️  Only ONE password per role works now (no fallback to old passwords)`);
+    console.log(`👥 ADMIN/CASHIER: SEPARATE login endpoints`);
+    console.log(`🔐 Passwords stored in MongoDB`);
+    console.log(`✅ Cashier order status endpoint: /api/cashier/orders/:id/status`);
   });
 });
