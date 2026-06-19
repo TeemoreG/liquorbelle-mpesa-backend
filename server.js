@@ -256,83 +256,7 @@ function escapeHtml(str) {
 const BREVO_API_KEY = process.env.BREVO_API_KEY;
 
 // ==================== EMAIL FUNCTIONS ====================
-async function sendCodOrderReceivedEmail(orderData) {
-  if (!BREVO_API_KEY) return;
-  const { orderId, customerName, items, subtotal, delivery, total, address, phone, customerEmail } = orderData;
-  const deliveryText = delivery === 0 ? 'FREE' : `KES ${delivery.toLocaleString()}`;
-  
-  const itemsHtml = (items || []).map(item => {
-    const productName = item.product_name || item.name || 'Product';
-    const productQty = item.quantity || item.qty || 1;
-    const productPrice = item.price || 0;
-    const productSize = item.size || '750ml';
-    return `
-      <tr style="border-bottom:1px solid #1c1c28;">
-        <td style="padding:12px 0;"><span style="color:#e0e0e0;">${escapeHtml(productName)} x${productQty}</span><br><span style="color:#555;font-size:11px;">${escapeHtml(productSize)}</span></td>
-        <td style="padding:12px 0;text-align:right;color:#f0a500;">KES ${(productPrice * productQty).toLocaleString()}</td>
-      </tr>
-    `;
-  }).join('');
-
-  const html = `<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Order Received - LiquorBelle</title></head>
-<body style="margin:0;padding:0;background:#0a0a0f;font-family:Arial,sans-serif;">
-<div style="max-width:580px;margin:0 auto;padding:20px;">
-<div style="background:#111118;border-radius:24px;overflow:hidden;border:1px solid #1e1e2c;">
-  <div style="height:3px;background:linear-gradient(90deg,#f0a500,#e03131,#f0a500);"></div>
-  <div style="background:#1a0808;text-align:center;padding:32px 24px;">
-    <img src="https://res.cloudinary.com/dvqjgbdhp/image/upload/v1780905905/WhatsApp_Image_2026-06-04_at_3.41.50_PM_saprsh.jpg" alt="LiquorBelle" style="width:60px;border-radius:16px;margin-bottom:12px;">
-    <div style="font-size:26px;font-weight:900;color:#fff;">Liquor<span style="color:#f0a500;">Belle</span></div>
-    <div style="color:#666;font-size:11px;">Dagoretti's Finest · 24/7 Delivery</div>
-  </div>
-  <div style="text-align:center;padding:20px 24px 0;">
-    <span style="background:rgba(240,165,0,0.12);color:#f0a500;padding:8px 20px;border-radius:50px;font-size:11px;font-weight:800;">📋 ORDER RECEIVED - RIDER ON THE WAY</span>
-  </div>
-  <div style="padding:20px 28px;">
-    <h2 style="color:#fff;font-size:18px;">Hello ${escapeHtml(customerName)},</h2>
-    <p style="color:#888;font-size:14px;">🎉 Your order has been received! Our rider is on the way to deliver your drinks.</p>
-    <p style="color:#888;font-size:14px;margin-top:12px;">📞 The rider will call <strong style="color:#f0a500;">${escapeHtml(phone)}</strong> when approaching your location.</p>
-    <p style="color:#ff6b6b;font-size:14px;font-weight:700;">💰 Please have the exact cash ready upon delivery.</p>
-  </div>
-  <div style="padding:0 28px;">
-    <table style="width:100%;background:#16161f;border-radius:16px;overflow:hidden;">
-      <tr style="background:#1a1a26;"><td colspan="2" style="padding:12px 16px;color:#f0a500;font-weight:800;">🍾 ORDER ITEMS</td></tr>
-      ${itemsHtml}
-      <tr><td style="padding:12px 16px;color:#777;">Subtotal</td><td style="padding:12px 16px;text-align:right;color:#ccc;">KES ${subtotal.toLocaleString()}</td></tr>
-      <tr><td style="padding:12px 16px;color:#777;">Delivery Fee</td><td style="padding:12px 16px;text-align:right;color:#ccc;">${deliveryText}</td></tr>
-      <tr style="background:#1a0808;"><td style="padding:16px;color:#fff;font-weight:800;">TOTAL TO PAY</td><td style="padding:16px;text-align:right;color:#f0a500;font-size:20px;font-weight:800;">KES ${total.toLocaleString()}</td></tr>
-    </table>
-  </div>
-  <div style="margin:20px 28px;background:#16161f;border-radius:16px;padding:16px;">
-    <div style="color:#f0a500;">📍 DELIVERY ADDRESS</div>
-    <div style="color:#ddd;">${escapeHtml(address)}</div>
-    <div style="color:#666;margin-top:8px;">📞 ${escapeHtml(phone)}</div>
-  </div>
-  <div style="margin:0 28px 20px;background:rgba(240,165,0,0.08);border-radius:16px;padding:16px;text-align:center;">
-    <div style="font-size:28px;">🏍️</div>
-    <div style="color:#f0a500;font-weight:800;">Estimated Delivery: 10-45 minutes</div>
-    <div style="color:#666;">Rider will call before arrival</div>
-  </div>
-  <div style="padding:20px 28px;text-align:center;">
-    <a href="https://teemoreg.github.io/liquorbelle/track-orders.html?email=${encodeURIComponent(customerEmail)}" style="background:#e03131;color:#fff;padding:12px 32px;border-radius:50px;text-decoration:none;font-weight:800;">🔍 Track Order</a>
-  </div>
-  <div style="background:#0d0d14;text-align:center;padding:16px;color:#444;">📞 +254 748 894 443 · WhatsApp 24/7</div>
-</div>
-</div>
-</body>
-</html>`;
-
-  try {
-    await axios.post('https://api.brevo.com/v3/smtp/email', {
-      sender: { name: 'LiquorBelle', email: 'timblax0@gmail.com' },
-      to: [{ email: customerEmail }],
-      subject: `📦 Order Received - ${orderId} - LiquorBelle`,
-      htmlContent: html
-    }, { headers: { 'api-key': BREVO_API_KEY } });
-    console.log(`📧 COD order received email sent to ${customerEmail}`);
-  } catch (err) { console.error('Email error:', err.message); }
-}
+// REMOVED: sendCodOrderReceivedEmail - Cash on Delivery removed
 
 async function sendMpesaOrderReceivedEmail(orderData) {
   if (!BREVO_API_KEY) return;
@@ -650,16 +574,12 @@ app.post('/api/send-order-email', async (req, res) => {
   const { email, orderId, customerName, phone, items, subtotal, delivery, total, address, timestamp, paymentMethod } = req.body;
   if (!BREVO_API_KEY) return res.json({ success: false });
   
-  if (paymentMethod === 'cod') {
-    await sendCodOrderReceivedEmail({ orderId, customerName, items, subtotal, delivery, total, address, phone, customerEmail: email });
-  } else {
-    await sendMpesaOrderReceivedEmail({ orderId, customerName, items, subtotal, delivery, total, address, phone, customerEmail: email });
-  }
+  // Only M-PESA now
+  await sendMpesaOrderReceivedEmail({ orderId, customerName, items, subtotal, delivery, total, address, phone, customerEmail: email });
   res.json({ success: true });
 });
 
 // ==================== PRODUCT & ORDER CRUD ====================
-// ==================== FIXED: PRODUCT ROUTE WITH ERROR HANDLING ====================
 app.get('/api/db/products', async (req, res) => {
   try {
     if (!db) {
@@ -717,6 +637,7 @@ app.get('/api/db/orders', requireAdmin, async (req, res) => {
   }
 });
 
+// ==================== FIXED: ORDER CREATE - M-PESA ONLY ====================
 app.post('/api/db/orders', async (req, res) => {
   try {
     if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
@@ -724,18 +645,19 @@ app.post('/api/db/orders', async (req, res) => {
     const order = {
       order_number: orderNumber, customer_name: customerName, customer_email: customerEmail.toLowerCase(),
       phone, address, notes: notes || '', subtotal: subtotal || 0, delivery: delivery || 0, total,
-      payment_method: paymentMethod, status: 'pending',
+      payment_method: 'M-PESA', // Always M-PESA
+      status: 'paid', // M-PESA orders are paid immediately
       items: items.map(item => ({ product_name: item.name, ...item, size: item.size || '750ml' })),
       created_at: new Date(), updated_at: new Date()
     };
     const result = await db.collection('orders').insertOne(order);
     
-    if (paymentMethod === 'cod') {
-      await sendCodOrderReceivedEmail({ orderId: orderNumber, customerName, items, subtotal, delivery, total, address, phone, customerEmail });
-    }
+    // Send M-PESA confirmation email
+    await sendMpesaOrderReceivedEmail({ orderId: orderNumber, customerName, items, subtotal, delivery, total, address, phone, customerEmail });
     
     res.json({ success: true, order: { _id: result.insertedId, ...order } });
   } catch (err) {
+    console.error('Error creating order:', err);
     res.status(500).json({ success: false, message: 'Failed to create order' });
   }
 });
@@ -944,13 +866,13 @@ connectDB().then(() => {
     console.log(`🗄️ MongoDB: ${db ? '✅ Connected' : '❌ Not connected'}`);
     console.log(``);
     console.log(`📨 EMAIL FLOW:`);
-    console.log(`   COD: Place Order → "Order Received (Rider on way)" | Delivered → "Order Delivered Successfully"`);
     console.log(`   M-PESA: Payment Callback → "Order Received (Rider on way)" | Delivered → "Order Delivered Successfully"`);
     console.log(``);
     console.log(`🧹 AUTO-CLEANUP: Unpaid pending orders older than 35 seconds will be automatically removed`);
     console.log(`👥 ADMIN/CASHIER: SEPARATE login endpoints`);
     console.log(`🔐 Passwords stored in MongoDB`);
     console.log(`✅ Cashier order status endpoint: /api/cashier/orders/:id/status`);
+    console.log(`✅ COD REMOVED: Only M-PESA payment accepted`);
   });
 }).catch(err => {
   console.error('Failed to start server:', err);
