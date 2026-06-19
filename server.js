@@ -80,6 +80,14 @@ app.use('/api/db/orders', orderCreateLimiter);
 app.use('/api/db/', adminLimiter);
 app.use('/api/admin/', adminLimiter);
 
+// ==================== JWT FOR ADMIN ONLY ====================
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.error('❌ JWT_SECRET env var not set. Refusing to start.');
+  process.exit(1);
+}
+const jwt = require('jsonwebtoken');
+
 // ==================== ADMIN/CASHIER MIDDLEWARE ====================
 function requireAdminOrCashier(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -117,14 +125,6 @@ function requireAdmin(req, res, next) {
   }
 }
 
-// ==================== JWT FOR ADMIN ONLY ====================
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
-  console.error('❌ JWT_SECRET env var not set. Refusing to start.');
-  process.exit(1);
-}
-const jwt = require('jsonwebtoken');
-
 // ==================== MONGODB CONNECTION ====================
 const MONGODB_URI = process.env.MONGODB_URI;
 let db;
@@ -137,6 +137,13 @@ let passwordsLoaded = false;
 
 async function loadPasswordsFromDB() {
   try {
+    if (!db) {
+      console.log('⚠️ DB not connected, using env passwords');
+      activeAdminPassword = ENV_ADMIN_PASSWORD;
+      activeCashierPassword = CASHIER_PASSWORD;
+      passwordsLoaded = true;
+      return false;
+    }
     const adminSettings = await db.collection('admin_settings').findOne({ key: 'passwords' });
     if (adminSettings && adminSettings.value) {
       activeAdminPassword = adminSettings.value.adminPassword;
@@ -172,9 +179,17 @@ async function getActivePasswords() {
   };
 }
 
+// ==================== FIXED: connectDB() with SSL options ====================
 async function connectDB() {
   try {
-    client = new MongoClient(MONGODB_URI);
+    client = new MongoClient(MONGODB_URI, {
+      tls: true,
+      tlsAllowInvalidCertificates: true,
+      family: 4,
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+      connectTimeoutMS: 10000
+    });
     await client.connect();
     db = client.db('liquorbelle');
     console.log('✅ MongoDB connected');
@@ -214,7 +229,8 @@ async function connectDB() {
     }, 30000);
     
   } catch (err) {
-    console.error('MongoDB connection error:', err);
+    console.error('MongoDB connection error:', err.message);
+    console.log('🔄 Retrying connection in 5 seconds...');
     setTimeout(connectDB, 5000);
   }
 }
@@ -537,6 +553,7 @@ app.get('/api/orders/track', async (req, res) => {
     const { email } = req.query;
     if (!email) return res.status(400).json({ success: false, message: 'Email required' });
     if (!isValidEmail(email)) return res.status(400).json({ success: false, message: 'Please enter a valid email address' });
+    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
     const orders = await db.collection('orders').find({ customer_email: email.toLowerCase() }).sort({ created_at: -1 }).toArray();
     res.json({ success: true, orders });
   } catch (err) {
@@ -573,22 +590,27 @@ function formatPhone(phone) {
 }
 
 app.post('/api/stkpush', stkLimiter, async (req, res) => {
-  const { phone, orderId, customerName, address, items, subtotal, delivery, total, customerEmail } = req.body;
-  const formattedPhone = formatPhone(phone);
-  const timestamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
-  const password = Buffer.from(`${SHORTCODE}${PASSKEY}${timestamp}`).toString('base64');
-  const token = await getMpesaAccessToken();
+  try {
+    const { phone, orderId, customerName, address, items, subtotal, delivery, total, customerEmail } = req.body;
+    const formattedPhone = formatPhone(phone);
+    const timestamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
+    const password = Buffer.from(`${SHORTCODE}${PASSKEY}${timestamp}`).toString('base64');
+    const token = await getMpesaAccessToken();
 
-  await axios.post(`${baseURL}/mpesa/stkpush/v1/processrequest`, {
-    BusinessShortCode: SHORTCODE, Password: password, Timestamp: timestamp,
-    TransactionType: 'CustomerPayBillOnline', Amount: Math.round(total),
-    PartyA: formattedPhone, PartyB: SHORTCODE, PhoneNumber: formattedPhone,
-    CallBackURL: `https://liquorbelle-mpesa-backend.onrender.com/api/callback`,
-    AccountReference: orderId, TransactionDesc: `LiquorBelle Order ${orderId}`
-  }, { headers: { Authorization: `Bearer ${token}` } });
+    await axios.post(`${baseURL}/mpesa/stkpush/v1/processrequest`, {
+      BusinessShortCode: SHORTCODE, Password: password, Timestamp: timestamp,
+      TransactionType: 'CustomerPayBillOnline', Amount: Math.round(total),
+      PartyA: formattedPhone, PartyB: SHORTCODE, PhoneNumber: formattedPhone,
+      CallBackURL: `https://liquorbelle-mpesa-backend.onrender.com/api/callback`,
+      AccountReference: orderId, TransactionDesc: `LiquorBelle Order ${orderId}`
+    }, { headers: { Authorization: `Bearer ${token}` } });
 
-  await db.collection('pending_orders').insertOne({ orderId, customerName, phone: formattedPhone, address, items, subtotal, delivery, total, customerEmail, created_at: new Date(), paid: false });
-  res.json({ success: true });
+    await db.collection('pending_orders').insertOne({ orderId, customerName, phone: formattedPhone, address, items, subtotal, delivery, total, customerEmail, created_at: new Date(), paid: false });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('STK Push error:', err.message);
+    res.status(500).json({ success: false, message: 'Payment request failed' });
+  }
 });
 
 app.post('/api/callback', async (req, res) => {
@@ -637,72 +659,115 @@ app.post('/api/send-order-email', async (req, res) => {
 });
 
 // ==================== PRODUCT & ORDER CRUD ====================
+// ==================== FIXED: PRODUCT ROUTE WITH ERROR HANDLING ====================
 app.get('/api/db/products', async (req, res) => {
-  const products = await db.collection('products').find({}).sort({ created_at: -1 }).toArray();
-  res.json({ success: true, products });
+  try {
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting... Please try again in a moment.' 
+      });
+    }
+    const products = await db.collection('products').find({}).sort({ created_at: -1 }).toArray();
+    res.json({ success: true, products });
+  } catch (err) {
+    console.error('Error fetching products:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch products' });
+  }
 });
 
 app.post('/api/db/products', requireAdmin, async (req, res) => {
-  const product = { ...req.body, created_at: new Date(), updated_at: new Date() };
-  const result = await db.collection('products').insertOne(product);
-  res.json({ success: true, product: { _id: result.insertedId, ...product } });
+  try {
+    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    const product = { ...req.body, created_at: new Date(), updated_at: new Date() };
+    const result = await db.collection('products').insertOne(product);
+    res.json({ success: true, product: { _id: result.insertedId, ...product } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to create product' });
+  }
 });
 
 app.put('/api/db/products/:id', requireAdmin, async (req, res) => {
-  await db.collection('products').updateOne({ _id: new ObjectId(req.params.id) }, { $set: { ...req.body, updated_at: new Date() } });
-  res.json({ success: true });
+  try {
+    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    await db.collection('products').updateOne({ _id: new ObjectId(req.params.id) }, { $set: { ...req.body, updated_at: new Date() } });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to update product' });
+  }
 });
 
 app.delete('/api/db/products/:id', requireAdmin, async (req, res) => {
-  await db.collection('products').deleteOne({ _id: new ObjectId(req.params.id) });
-  res.json({ success: true });
+  try {
+    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    await db.collection('products').deleteOne({ _id: new ObjectId(req.params.id) });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to delete product' });
+  }
 });
 
 app.get('/api/db/orders', requireAdmin, async (req, res) => {
-  const orders = await db.collection('orders').find({}).sort({ created_at: -1 }).toArray();
-  res.json({ success: true, orders });
+  try {
+    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    const orders = await db.collection('orders').find({}).sort({ created_at: -1 }).toArray();
+    res.json({ success: true, orders });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch orders' });
+  }
 });
 
 app.post('/api/db/orders', async (req, res) => {
-  const { orderNumber, customerName, customerEmail, phone, address, notes, subtotal, delivery, total, paymentMethod, items } = req.body;
-  const order = {
-    order_number: orderNumber, customer_name: customerName, customer_email: customerEmail.toLowerCase(),
-    phone, address, notes: notes || '', subtotal: subtotal || 0, delivery: delivery || 0, total,
-    payment_method: paymentMethod, status: 'pending',
-    items: items.map(item => ({ product_name: item.name, ...item, size: item.size || '750ml' })),
-    created_at: new Date(), updated_at: new Date()
-  };
-  const result = await db.collection('orders').insertOne(order);
-  
-  if (paymentMethod === 'cod') {
-    await sendCodOrderReceivedEmail({ orderId: orderNumber, customerName, items, subtotal, delivery, total, address, phone, customerEmail });
+  try {
+    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    const { orderNumber, customerName, customerEmail, phone, address, notes, subtotal, delivery, total, paymentMethod, items } = req.body;
+    const order = {
+      order_number: orderNumber, customer_name: customerName, customer_email: customerEmail.toLowerCase(),
+      phone, address, notes: notes || '', subtotal: subtotal || 0, delivery: delivery || 0, total,
+      payment_method: paymentMethod, status: 'pending',
+      items: items.map(item => ({ product_name: item.name, ...item, size: item.size || '750ml' })),
+      created_at: new Date(), updated_at: new Date()
+    };
+    const result = await db.collection('orders').insertOne(order);
+    
+    if (paymentMethod === 'cod') {
+      await sendCodOrderReceivedEmail({ orderId: orderNumber, customerName, items, subtotal, delivery, total, address, phone, customerEmail });
+    }
+    
+    res.json({ success: true, order: { _id: result.insertedId, ...order } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to create order' });
   }
-  
-  res.json({ success: true, order: { _id: result.insertedId, ...order } });
 });
 
 // ==================== ADMIN ORDER STATUS UPDATE ====================
 app.put('/api/db/orders/:id/status', requireAdmin, async (req, res) => {
-  const { status } = req.body;
-  await db.collection('orders').updateOne({ _id: new ObjectId(req.params.id) }, { $set: { status, updated_at: new Date() } });
-  
-  if (status === 'delivered') {
-    const order = await db.collection('orders').findOne({ _id: new ObjectId(req.params.id) });
-    if (order && order.customer_email) {
-      await sendOrderDeliveredEmail({
-        orderId: order.order_number, customerName: order.customer_name,
-        items: order.items, total: order.total,
-        phone: order.phone, customerEmail: order.customer_email
-      });
+  try {
+    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    const { status } = req.body;
+    await db.collection('orders').updateOne({ _id: new ObjectId(req.params.id) }, { $set: { status, updated_at: new Date() } });
+    
+    if (status === 'delivered') {
+      const order = await db.collection('orders').findOne({ _id: new ObjectId(req.params.id) });
+      if (order && order.customer_email) {
+        await sendOrderDeliveredEmail({
+          orderId: order.order_number, customerName: order.customer_name,
+          items: order.items, total: order.total,
+          phone: order.phone, customerEmail: order.customer_email
+        });
+      }
     }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to update order status' });
   }
-  res.json({ success: true });
 });
 
-// ==================== CASHIER ORDER STATUS UPDATE (FIX FOR admin-orders.html) ====================
+// ==================== CASHIER ORDER STATUS UPDATE ====================
 app.put('/api/cashier/orders/:id/status', requireAdminOrCashier, async (req, res) => {
-  const { status } = req.body;
   try {
+    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    const { status } = req.body;
     await db.collection('orders').updateOne(
       { _id: new ObjectId(req.params.id) }, 
       { $set: { status, updated_at: new Date() } }
@@ -729,25 +794,36 @@ app.put('/api/cashier/orders/:id/status', requireAdminOrCashier, async (req, res
 });
 
 app.delete('/api/db/orders/:id', requireAdmin, async (req, res) => {
-  await db.collection('orders').deleteOne({ _id: new ObjectId(req.params.id) });
-  res.json({ success: true });
+  try {
+    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    await db.collection('orders').deleteOne({ _id: new ObjectId(req.params.id) });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to delete order' });
+  }
 });
 
 app.get('/api/db/stats', requireAdmin, async (req, res) => {
-  const [totalOrders, totalProducts, revenueResult, pending, paid, delivered] = await Promise.all([
-    db.collection('orders').countDocuments(),
-    db.collection('products').countDocuments(),
-    db.collection('orders').aggregate([{ $match: { status: 'delivered' } }, { $group: { _id: null, total: { $sum: '$total' } } }]).toArray(),
-    db.collection('orders').countDocuments({ status: 'pending' }),
-    db.collection('orders').countDocuments({ status: 'paid' }),
-    db.collection('orders').countDocuments({ status: 'delivered' })
-  ]);
-  res.json({ success: true, stats: { totalOrders, totalProducts, totalRevenue: revenueResult[0]?.total || 0, pendingOrders: pending, paidOrders: paid, deliveredOrders: delivered } });
+  try {
+    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    const [totalOrders, totalProducts, revenueResult, pending, paid, delivered] = await Promise.all([
+      db.collection('orders').countDocuments(),
+      db.collection('products').countDocuments(),
+      db.collection('orders').aggregate([{ $match: { status: 'delivered' } }, { $group: { _id: null, total: { $sum: '$total' } } }]).toArray(),
+      db.collection('orders').countDocuments({ status: 'pending' }),
+      db.collection('orders').countDocuments({ status: 'paid' }),
+      db.collection('orders').countDocuments({ status: 'delivered' })
+    ]);
+    res.json({ success: true, stats: { totalOrders, totalProducts, totalRevenue: revenueResult[0]?.total || 0, pendingOrders: pending, paidOrders: paid, deliveredOrders: delivered } });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch stats' });
+  }
 });
 
 // ==================== DELIVERY SETTINGS ====================
 app.get('/api/delivery-settings', async (req, res) => {
   try {
+    if (!db) return res.json({ success: true, settings: { delivery_fee: 150, free_delivery_threshold: 3000, delivery_enabled: true } });
     const settings = await db.collection('settings').findOne({ key: 'delivery' });
     res.json({ success: true, settings: settings?.value || { delivery_fee: 150, free_delivery_threshold: 3000, delivery_enabled: true } });
   } catch (err) {
@@ -756,18 +832,29 @@ app.get('/api/delivery-settings', async (req, res) => {
 });
 
 app.get('/api/admin/delivery-settings', requireAdmin, async (req, res) => {
-  const settings = await db.collection('settings').findOne({ key: 'delivery' });
-  res.json({ success: true, settings: settings?.value || { delivery_fee: 150, free_delivery_threshold: 3000, delivery_enabled: true } });
+  try {
+    if (!db) return res.json({ success: true, settings: { delivery_fee: 150, free_delivery_threshold: 3000, delivery_enabled: true } });
+    const settings = await db.collection('settings').findOne({ key: 'delivery' });
+    res.json({ success: true, settings: settings?.value || { delivery_fee: 150, free_delivery_threshold: 3000, delivery_enabled: true } });
+  } catch (err) {
+    res.json({ success: true, settings: { delivery_fee: 150, free_delivery_threshold: 3000, delivery_enabled: true } });
+  }
 });
 
 app.post('/api/admin/delivery-settings', requireAdmin, async (req, res) => {
-  await db.collection('settings').updateOne({ key: 'delivery' }, { $set: { value: req.body, updated_at: new Date() } }, { upsert: true });
-  res.json({ success: true });
+  try {
+    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    await db.collection('settings').updateOne({ key: 'delivery' }, { $set: { value: req.body, updated_at: new Date() } }, { upsert: true });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to update delivery settings' });
+  }
 });
 
 // ==================== CASHIER/ADMIN ORDERS ENDPOINTS ====================
 app.get('/api/admin/all-orders', requireAdminOrCashier, async (req, res) => {
   try {
+    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
     const { limit = 1000, status, days } = req.query;
     
     let query = {};
@@ -794,6 +881,7 @@ app.get('/api/admin/all-orders', requireAdminOrCashier, async (req, res) => {
 
 app.get('/api/admin/recent-orders', requireAdminOrCashier, async (req, res) => {
   try {
+    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
     const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const orders = await db.collection('orders')
       .find({ created_at: { $gte: last24h } })
@@ -817,6 +905,7 @@ app.post('/api/admin/verify', async (req, res) => {
 app.post('/api/send-email-otp', otpLimiter, async (req, res) => {
   const { email, otp } = req.body;
   if (!isValidEmail(email)) return res.json({ success: false, message: 'Invalid email format' });
+  if (!db) return res.json({ success: false, message: 'Database connecting...' });
   await db.collection('otps').updateOne({ email }, { $set: { otp, created_at: new Date() } }, { upsert: true });
   try {
     await axios.post('https://api.brevo.com/v3/smtp/email', {
@@ -830,6 +919,7 @@ app.post('/api/send-email-otp', otpLimiter, async (req, res) => {
 });
 
 app.post('/api/verify-otp', async (req, res) => {
+  if (!db) return res.json({ success: false, message: 'Database connecting...' });
   const stored = await db.collection('otps').findOne({ email: req.body.email });
   if (!stored || stored.otp !== req.body.otp) return res.json({ success: false });
   await db.collection('otps').deleteOne({ email: req.body.email });
@@ -838,7 +928,11 @@ app.post('/api/verify-otp', async (req, res) => {
 
 // ==================== HEALTH ====================
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', database: 'MongoDB', uptime: process.uptime() });
+  res.json({ 
+    status: 'ok', 
+    database: db ? 'connected' : 'disconnected', 
+    uptime: process.uptime() 
+  });
 });
 
 // ==================== START ====================
@@ -847,7 +941,7 @@ connectDB().then(() => {
   app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📧 Email: ${BREVO_API_KEY ? '✅' : '❌'}`);
-    console.log(`🗄️ MongoDB: ✅ Connected`);
+    console.log(`🗄️ MongoDB: ${db ? '✅ Connected' : '❌ Not connected'}`);
     console.log(``);
     console.log(`📨 EMAIL FLOW:`);
     console.log(`   COD: Place Order → "Order Received (Rider on way)" | Delivered → "Order Delivered Successfully"`);
@@ -858,4 +952,6 @@ connectDB().then(() => {
     console.log(`🔐 Passwords stored in MongoDB`);
     console.log(`✅ Cashier order status endpoint: /api/cashier/orders/:id/status`);
   });
+}).catch(err => {
+  console.error('Failed to start server:', err);
 });
