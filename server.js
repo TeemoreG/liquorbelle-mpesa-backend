@@ -6,7 +6,7 @@ const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const { MongoClient, ObjectId } = require('mongodb');
 const NodeCache = require('node-cache');
-const bcrypt = require('bcryptjs'); // FIXED: Using bcryptjs (pure JS, no vulnerabilities)
+const bcrypt = require('bcryptjs');
 const { body, validationResult } = require('express-validator');
 
 // ==================== CACHE SETUP ====================
@@ -15,10 +15,6 @@ const productCache = new NodeCache({ stdTTL: 300, checkperiod: 600 });
 const statsCache = new NodeCache({ stdTTL: 300, checkperiod: 600 });
 
 // ==================== ENVIRONMENT VALIDATION ====================
-if (!process.env.ADMIN_PASSWORD) {
-  console.error('❌ ADMIN_PASSWORD env var not set. Refusing to start.');
-  process.exit(1);
-}
 if (!process.env.MONGODB_URI) {
   console.error('❌ MONGODB_URI env var not set. Refusing to start.');
   process.exit(1);
@@ -34,8 +30,9 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '10mb' }));
 app.use(compression());
 
-// ==================== ADMIN CONFIG ====================
-const ENV_ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+// ==================== DEFAULT PASSWORDS (HARDCODED) ====================
+const DEFAULT_ADMIN_PASSWORD = 'admin123';
+const DEFAULT_CASHIER_PASSWORD = 'cashier1234';
 
 // ==================== EMAIL VALIDATION ====================
 function isValidEmail(email) {
@@ -141,50 +138,62 @@ let activeAdminPasswordHash = null;
 let activeCashierPasswordHash = null;
 let passwordsLoaded = false;
 
+// ==================== FORCE SET DEFAULT PASSWORDS ====================
+async function forceSetDefaultPasswords() {
+  try {
+    if (!db) return;
+    
+    const adminHash = await bcrypt.hash(DEFAULT_ADMIN_PASSWORD, 10);
+    const cashierHash = await bcrypt.hash(DEFAULT_CASHIER_PASSWORD, 10);
+    
+    await db.collection('admin_settings').updateOne(
+      { key: 'passwords' },
+      { 
+        $set: { 
+          value: {
+            adminPasswordHash: adminHash,
+            cashierPasswordHash: cashierHash,
+            updated_at: new Date()
+          },
+          updated_at: new Date()
+        } 
+      },
+      { upsert: true }
+    );
+    
+    activeAdminPasswordHash = adminHash;
+    activeCashierPasswordHash = cashierHash;
+    passwordsLoaded = true;
+    
+    console.log('✅ Default passwords set:');
+    console.log(`   Admin: ${DEFAULT_ADMIN_PASSWORD}`);
+    console.log(`   Cashier: ${DEFAULT_CASHIER_PASSWORD}`);
+  } catch (err) {
+    console.error('Error setting default passwords:', err);
+  }
+}
+
 async function loadPasswordsFromDB() {
   try {
     if (!db) {
-      console.log('⚠️ DB not connected, using env fallback');
-      activeAdminPasswordHash = await bcrypt.hash(ENV_ADMIN_PASSWORD, 10);
-      activeCashierPasswordHash = await bcrypt.hash('admin123', 10);
-      passwordsLoaded = true;
+      console.log('⚠️ DB not connected, waiting...');
       return false;
     }
     const adminSettings = await db.collection('admin_settings').findOne({ key: 'passwords' });
-    if (adminSettings && adminSettings.value) {
+    if (adminSettings && adminSettings.value && adminSettings.value.adminPasswordHash) {
       activeAdminPasswordHash = adminSettings.value.adminPasswordHash;
       activeCashierPasswordHash = adminSettings.value.cashierPasswordHash;
       console.log('✅ Loaded password hashes from database');
-      console.log(`   Admin password: ${activeAdminPasswordHash ? '✓ Set' : '✗ Not set'}`);
-      console.log(`   Cashier password: ${activeCashierPasswordHash ? '✓ Set' : '✗ Not set'}`);
       passwordsLoaded = true;
       return true;
     } else {
-      activeAdminPasswordHash = await bcrypt.hash(ENV_ADMIN_PASSWORD, 10);
-      activeCashierPasswordHash = await bcrypt.hash('admin123', 10);
-      
-      await db.collection('admin_settings').updateOne(
-        { key: 'passwords' },
-        { 
-          $set: { 
-            value: { 
-              adminPasswordHash: activeAdminPasswordHash,
-              cashierPasswordHash: activeCashierPasswordHash,
-              updated_at: new Date()
-            },
-            updated_at: new Date()
-          } 
-        },
-        { upsert: true }
-      );
-      console.log('📝 Initial password hashes saved to database');
-      passwordsLoaded = true;
-      return false;
+      // No passwords in DB - set defaults
+      await forceSetDefaultPasswords();
+      return true;
     }
   } catch (err) {
     console.error('Error loading passwords from DB:', err.message);
-    activeAdminPasswordHash = await bcrypt.hash(ENV_ADMIN_PASSWORD, 10);
-    activeCashierPasswordHash = await bcrypt.hash('admin123', 10);
+    await forceSetDefaultPasswords();
     return false;
   }
 }
@@ -247,6 +256,7 @@ async function connectDB() {
     await db.collection('otps').createIndex({ created_at: 1 }, { expireAfterSeconds: 600 });
     await db.collection('customers').createIndex({ email: 1 }, { unique: true });
 
+    // Load passwords (sets defaults if none exist)
     await loadPasswordsFromDB();
 
     const productCount = await db.collection('products').countDocuments();
@@ -284,6 +294,7 @@ async function connectDB() {
   }
 }
 
+// ==================== SEED PRODUCTS ====================
 const seedProducts = [
   { name: "Chrome Gin", category: "gin", badge: "local", image: "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop", description: "Premium Kenyan gin", variants: [{ size: "250ml", price: 600, discount: 0 }, { size: "500ml", price: 1100, discount: 0 }, { size: "750ml", price: 1650, discount: 0 }, { size: "1L", price: 2200, discount: 0 }], isTrending: true, created_at: new Date() },
   { name: "Konyagi", category: "brandy", badge: "local", image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", description: "Tanzania's finest spirit", variants: [{ size: "250ml", price: 250, discount: 0 }, { size: "500ml", price: 450, discount: 0 }, { size: "750ml", price: 700, discount: 0 }, { size: "1L", price: 950, discount: 0 }], isTrending: true, created_at: new Date() },
@@ -474,25 +485,20 @@ app.post('/api/cashier/login', async (req, res) => {
   res.status(401).json({ success: false, message: 'Invalid cashier password' });
 });
 
-// ==================== UPDATE PASSWORDS ====================
+// ==================== UPDATE PASSWORDS (ONLY FROM ADMIN FULL) ====================
 app.post('/api/admin/update-passwords', requireAdmin, async (req, res) => {
   try {
     const { adminPassword, cashierPassword } = req.body;
-    let currentSettings = await db.collection('admin_settings').findOne({ key: 'passwords' });
     let updateValue = {};
     
     if (adminPassword !== undefined && adminPassword !== '') {
       updateValue.adminPasswordHash = await bcrypt.hash(adminPassword, 10);
       console.log(`   Admin password updated`);
-    } else {
-      updateValue.adminPasswordHash = currentSettings?.value?.adminPasswordHash || await bcrypt.hash(ENV_ADMIN_PASSWORD, 10);
     }
     
     if (cashierPassword !== undefined && cashierPassword !== '') {
       updateValue.cashierPasswordHash = await bcrypt.hash(cashierPassword, 10);
       console.log(`   Cashier password updated`);
-    } else {
-      updateValue.cashierPasswordHash = currentSettings?.value?.cashierPasswordHash || await bcrypt.hash('admin123', 10);
     }
     
     updateValue.updated_at = new Date();
@@ -717,7 +723,7 @@ app.delete('/api/db/products/:id', requireAdmin, async (req, res) => {
   }
 });
 
-// ==================== ORDERS - SECURE AUTH REQUIRED ====================
+// ==================== ORDERS ====================
 app.get('/api/db/orders', requireAdmin, async (req, res) => {
   try {
     if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
@@ -735,7 +741,6 @@ app.get('/api/db/orders', requireAdmin, async (req, res) => {
   }
 });
 
-// ==================== ORDER CREATE - SECURED + PENDING STATUS ====================
 app.post('/api/db/orders', requireAdminOrCashier, [
   body('orderNumber').notEmpty().withMessage('Order number required'),
   body('customerName').notEmpty().withMessage('Customer name required'),
@@ -1205,16 +1210,16 @@ app.get('/api/health', (req, res) => {
 });
 
 // ==================== START ====================
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 connectDB().then(() => {
   app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📧 Email: ${BREVO_API_KEY ? '✅' : '❌'}`);
     console.log(`🗄️ MongoDB: ${db ? '✅ Connected (secure TLS)' : '❌ Not connected'}`);
     console.log(``);
-    console.log(`📨 EMAIL FLOW:`);
-    console.log(`   M-PESA: Payment Callback → "Order Received (Rider on way)"`);
-    console.log(`   Delivered: Cashier/Admin → "Order Delivered Successfully"`);
+    console.log(`🔑 DEFAULT PASSWORDS:`);
+    console.log(`   Admin (admin-full.html): ${DEFAULT_ADMIN_PASSWORD}`);
+    console.log(`   Cashier (admin-orders.html): ${DEFAULT_CASHIER_PASSWORD}`);
     console.log(``);
     console.log(`🔒 SECURITY:`);
     console.log(`   ✅ Passwords stored as bcrypt hashes`);
@@ -1222,7 +1227,6 @@ connectDB().then(() => {
     console.log(`   ✅ Order creation requires authentication`);
     console.log(`   ✅ Express Validator enabled`);
     console.log(`   ✅ Order tracking requires OTP`);
-    console.log(`   ✅ No hardcoded password fallback`);
     console.log(`   ✅ bcryptjs used (pure JS, no native vulnerabilities)`);
     console.log(``);
     console.log(`⚡ CACHE ENABLED:`);
