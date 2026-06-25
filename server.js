@@ -9,6 +9,45 @@ const NodeCache = require('node-cache');
 const bcrypt = require('bcryptjs');
 const { body, validationResult } = require('express-validator');
 
+// ==================== CATEGORY CONFIG ====================
+const CATEGORIES = {
+  beer: 'Beer',
+  brandy: 'Brandy',
+  bourbon: 'Bourbon',
+  rum: 'Rum',
+  spirits: 'Spirits',
+  liqueur: 'Liqueur',
+  juice: 'Juice',
+  soda: 'Soda',
+  water: 'Water',
+  energy: 'Energy Drink',
+  cigar: 'Cigar',
+  accessory: 'Accessory'
+};
+
+const CATEGORY_COLORS = {
+  beer: '#F59E0B',
+  brandy: '#B8860B',
+  bourbon: '#8B4513',
+  rum: '#DC2626',
+  spirits: '#7C3AED',
+  liqueur: '#EC4899',
+  juice: '#EF4444',
+  soda: '#3B82F6',
+  water: '#06B6D4',
+  energy: '#F97316',
+  cigar: '#92400E',
+  accessory: '#6B7280'
+};
+
+function getCategoryLabel(category) {
+  return CATEGORIES[category] || category || 'Uncategorized';
+}
+
+function getCategoryColor(category) {
+  return CATEGORY_COLORS[category] || '#6B7280';
+}
+
 // ==================== CACHE SETUP ====================
 const orderCache = new NodeCache({ stdTTL: 60, checkperiod: 120 });
 const productCache = new NodeCache({ stdTTL: 300, checkperiod: 600 });
@@ -30,7 +69,7 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '10mb' }));
 app.use(compression());
 
-// ==================== DEFAULT PASSWORDS (HARDCODED) ====================
+// ==================== DEFAULT PASSWORDS ====================
 const DEFAULT_ADMIN_PASSWORD = 'admin123';
 const DEFAULT_CASHIER_PASSWORD = 'cashier1234';
 
@@ -88,11 +127,11 @@ app.use('/api/db/orders', orderCreateLimiter);
 app.use('/api/db/', adminLimiter);
 app.use('/api/admin/', adminLimiter);
 
-// ==================== JWT FOR ADMIN ONLY ====================
+// ==================== JWT ====================
 const JWT_SECRET = process.env.JWT_SECRET;
 const jwt = require('jsonwebtoken');
 
-// ==================== ADMIN/CASHIER MIDDLEWARE ====================
+// ==================== MIDDLEWARE ====================
 function requireAdminOrCashier(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -187,7 +226,6 @@ async function loadPasswordsFromDB() {
       passwordsLoaded = true;
       return true;
     } else {
-      // No passwords in DB - set defaults
       await forceSetDefaultPasswords();
       return true;
     }
@@ -208,7 +246,7 @@ async function getActivePasswords() {
   };
 }
 
-// ==================== CLEAR CACHE FUNCTION ====================
+// ==================== CLEAR CACHE FUNCTIONS ====================
 function clearOrderCache() {
   const keys = orderCache.keys();
   for (const key of keys) {
@@ -221,6 +259,7 @@ function clearOrderCache() {
 
 function clearProductCache() {
   productCache.del('all_products');
+  productCache.del('category_stats');
   console.log('🧹 Product cache cleared');
 }
 
@@ -229,6 +268,7 @@ function clearStatsCache() {
   statsCache.del('stats_weekly');
   statsCache.del('stats_monthly');
   statsCache.del('legacy_stats');
+  statsCache.del('category_stats');
   console.log('🧹 Stats cache cleared');
 }
 
@@ -248,24 +288,23 @@ async function connectDB() {
     console.log('✅ MongoDB connected (secure TLS)');
 
     await db.collection('products').createIndex({ name: 1 });
+    await db.collection('products').createIndex({ category: 1 });
     await db.collection('orders').createIndex({ customer_email: 1 });
     await db.collection('orders').createIndex({ created_at: -1 });
+    await db.collection('orders').createIndex({ status: 1 });
     await db.collection('settings').createIndex({ key: 1 });
     await db.collection('admin_settings').createIndex({ key: 1 });
     await db.collection('pending_orders').createIndex({ created_at: 1 }, { expireAfterSeconds: 3600 });
     await db.collection('otps').createIndex({ created_at: 1 }, { expireAfterSeconds: 600 });
     await db.collection('customers').createIndex({ email: 1 }, { unique: true });
 
-    // Load passwords (sets defaults if none exist)
     await loadPasswordsFromDB();
 
     const productCount = await db.collection('products').countDocuments();
     if (productCount === 0) {
-      console.log('📦 No products found. Seeding initial products...');
-      await db.collection('products').insertMany(seedProducts);
-      console.log('✅ 10 products seeded');
+      console.log('📦 No products found. Database ready for imports.');
     } else {
-      console.log(`✅ Products already exist (${productCount} products), skipping seed`);
+      console.log(`✅ Products already exist (${productCount} products)`);
     }
     console.log('✅ Database ready');
     
@@ -294,20 +333,7 @@ async function connectDB() {
   }
 }
 
-// ==================== SEED PRODUCTS ====================
-const seedProducts = [
-  { name: "Chrome Gin", category: "gin", badge: "local", image: "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop", description: "Premium Kenyan gin", variants: [{ size: "250ml", price: 600, discount: 0 }, { size: "500ml", price: 1100, discount: 0 }, { size: "750ml", price: 1650, discount: 0 }, { size: "1L", price: 2200, discount: 0 }], isTrending: true, created_at: new Date() },
-  { name: "Konyagi", category: "brandy", badge: "local", image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", description: "Tanzania's finest spirit", variants: [{ size: "250ml", price: 250, discount: 0 }, { size: "500ml", price: 450, discount: 0 }, { size: "750ml", price: 700, discount: 0 }, { size: "1L", price: 950, discount: 0 }], isTrending: true, created_at: new Date() },
-  { name: "Johnnie Walker Black Label", category: "whisky", badge: "hot", image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", description: "Smooth, complex whisky", variants: [{ size: "750ml", price: 3500, discount: 0 }, { size: "1L", price: 4500, discount: 0 }], isTrending: true, created_at: new Date() },
-  { name: "Jameson Irish Whiskey", category: "whisky", badge: "", image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", description: "Smooth triple-distilled whiskey", variants: [{ size: "750ml", price: 3200, discount: 0 }, { size: "1L", price: 4200, discount: 0 }], isTrending: true, created_at: new Date() },
-  { name: "Hennessy VS", category: "cognac", badge: "prem", image: "https://images.unsplash.com/photo-1584211065398-1acb769997e0?w=300&h=300&fit=crop", description: "World-renowned cognac", variants: [{ size: "750ml", price: 5500, discount: 0 }, { size: "1L", price: 7200, discount: 0 }], isTrending: true, created_at: new Date() },
-  { name: "Smirnoff Red Vodka", category: "vodka", badge: "", image: "https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop", description: "World's best-selling vodka", variants: [{ size: "250ml", price: 550, discount: 0 }, { size: "500ml", price: 800, discount: 0 }, { size: "750ml", price: 1100, discount: 0 }, { size: "1L", price: 1500, discount: 0 }], isTrending: true, created_at: new Date() },
-  { name: "Gilbeys Gin", category: "gin", badge: "local", image: "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?w=300&h=300&fit=crop", description: "Classic London dry gin", variants: [{ size: "250ml", price: 700, discount: 0 }, { size: "500ml", price: 1050, discount: 0 }, { size: "750ml", price: 1400, discount: 0 }, { size: "1L", price: 1900, discount: 0 }], isTrending: true, created_at: new Date() },
-  { name: "Absolut Vodka", category: "vodka", badge: "", image: "https://images.unsplash.com/photo-1614313913007-2f5ad100323c?w=300&h=300&fit=crop", description: "Premium Swedish vodka", variants: [{ size: "750ml", price: 1800, discount: 0 }, { size: "1L", price: 2400, discount: 0 }], isTrending: true, created_at: new Date() },
-  { name: "Kenya Cane Ginger", category: "rum", badge: "local", image: "https://images.unsplash.com/photo-1565277408825-5da2b2a4b1dd?w=300&h=300&fit=crop", description: "Locally produced sugarcane rum", variants: [{ size: "250ml", price: 500, discount: 0 }, { size: "500ml", price: 850, discount: 0 }, { size: "750ml", price: 1200, discount: 0 }, { size: "1L", price: 1600, discount: 0 }], isTrending: true, created_at: new Date() },
-  { name: "Tusker Lager", category: "beer", badge: "local", image: "https://images.unsplash.com/photo-1561758033-d89a9ad46330?w=300&h=300&fit=crop", description: "Kenya's favorite lager", variants: [{ size: "500ml", price: 230, discount: 0 }, { size: "12pack", price: 2500, discount: 0 }], isTrending: true, created_at: new Date() }
-];
-
+// ==================== ESCAPE HTML ====================
 function escapeHtml(str) {
   if (!str) return '';
   return str.replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
@@ -485,7 +511,7 @@ app.post('/api/cashier/login', async (req, res) => {
   res.status(401).json({ success: false, message: 'Invalid cashier password' });
 });
 
-// ==================== UPDATE PASSWORDS (ONLY FROM ADMIN FULL) ====================
+// ==================== UPDATE PASSWORDS ====================
 app.post('/api/admin/update-passwords', requireAdmin, async (req, res) => {
   try {
     const { adminPassword, cashierPassword } = req.body;
@@ -720,6 +746,282 @@ app.delete('/api/db/products/:id', requireAdmin, async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to delete product' });
+  }
+});
+
+// ==================== CLEAR ALL PRODUCTS ====================
+app.delete('/api/db/products/clear', requireAdmin, async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    const result = await db.collection('products').deleteMany({});
+    clearProductCache();
+    clearStatsCache();
+    res.json({ success: true, deletedCount: result.deletedCount, message: `Deleted ${result.deletedCount} products` });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to clear products' });
+  }
+});
+
+// ==================== CATEGORY STATS ====================
+app.get('/api/admin/category-stats', requireAdmin, async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ success: false });
+    
+    const cached = statsCache.get('category_stats');
+    if (cached) {
+      return res.json({ success: true, stats: cached, fromCache: true });
+    }
+    
+    const products = await db.collection('products').find({}).toArray();
+    const stats = {};
+    
+    Object.keys(CATEGORIES).forEach(cat => {
+      stats[cat] = { count: 0, label: CATEGORIES[cat], color: CATEGORY_COLORS[cat] };
+    });
+    
+    products.forEach(product => {
+      const cat = product.category || 'uncategorized';
+      if (stats[cat]) {
+        stats[cat].count++;
+      } else {
+        stats[cat] = { count: 1, label: cat, color: '#6B7280' };
+      }
+    });
+    
+    statsCache.set('category_stats', stats);
+    res.json({ success: true, stats });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to fetch category stats' });
+  }
+});
+
+// ==================== GOOGLE SHEETS INTEGRATION ====================
+// GOOGLE SHEETS API ENDPOINTS
+
+// Environment variables for Google Sheets
+const GOOGLE_SHEETS_API_KEY = process.env.GOOGLE_SHEETS_API_KEY;
+const GOOGLE_SHEETS_SPREADSHEET_ID = process.env.GOOGLE_SHEETS_SPREADSHEET_ID;
+
+// 1. IMPORT from Google Sheets (via API Key - public sheets only)
+app.post('/api/admin/import-sheet', requireAdmin, async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    
+    const { spreadsheetId, range, sheetName } = req.body;
+    const sheetId = spreadsheetId || GOOGLE_SHEETS_SPREADSHEET_ID;
+    const sheetRange = range || 'Sheet1!A1:Z1000';
+    
+    if (!GOOGLE_SHEETS_API_KEY) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Google Sheets API key not configured. Set GOOGLE_SHEETS_API_KEY in environment variables.' 
+      });
+    }
+    
+    if (!sheetId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Spreadsheet ID required. Provide in request or set GOOGLE_SHEETS_SPREADSHEET_ID.' 
+      });
+    }
+    
+    // Fetch data from Google Sheets
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${sheetRange}?key=${GOOGLE_SHEETS_API_KEY}`;
+    const response = await axios.get(url);
+    
+    const rows = response.data.values;
+    if (!rows || rows.length < 2) {
+      return res.status(400).json({ success: false, message: 'No data found in sheet' });
+    }
+    
+    // Parse headers
+    const headers = rows[0].map(h => h.trim().toLowerCase());
+    const imported = [];
+    const errors = [];
+    
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const obj = {};
+      for (let j = 0; j < headers.length; j++) {
+        obj[headers[j]] = row[j] || '';
+      }
+      
+      // Skip empty rows
+      if (!obj.name && !obj['product name']) continue;
+      
+      try {
+        const product = {
+          name: obj.name || obj['product name'] || '',
+          category: obj.category || obj['category'] || 'beer',
+          badge: obj.badge || obj['badge'] || '',
+          image: obj.image || obj['image url'] || obj['image_url'] || '',
+          description: obj.description || obj['description'] || '',
+          isTrending: (obj.trending || obj['is trending'] || obj['is_trending'] || '').toLowerCase() === 'true' || false,
+          isNew: (obj.new || obj['is new'] || obj['is_new'] || '').toLowerCase() === 'true' || false,
+          rating: parseFloat(obj.rating || obj['rating'] || 4) || 4,
+          variants: []
+        };
+        
+        // Collect variants (Size1, Price1, Discount1, Size2, Price2, Discount2, ...)
+        for (let k = 1; k <= 10; k++) {
+          const sizeKey = 'size' + k;
+          const priceKey = 'price' + k;
+          const discountKey = 'discount' + k;
+          
+          // Check both lowercase and original case
+          let size = obj[sizeKey] || obj['Size' + k] || obj['SIZE' + k] || '';
+          let price = parseFloat(obj[priceKey] || obj['Price' + k] || obj['PRICE' + k] || 0);
+          let discount = parseInt(obj[discountKey] || obj['Discount' + k] || obj['DISCOUNT' + k] || 0);
+          
+          if (size && price > 0) {
+            product.variants.push({ size, price, discount });
+          }
+        }
+        
+        // If no variants found, try looking for single variant columns
+        if (product.variants.length === 0) {
+          const size = obj.size || obj['Size'] || obj['SIZE'] || '750ml';
+          const price = parseFloat(obj.price || obj['Price'] || obj['PRICE'] || 0);
+          const discount = parseInt(obj.discount || obj['Discount'] || obj['DISCOUNT'] || 0);
+          if (price > 0) {
+            product.variants.push({ size, price, discount });
+          }
+        }
+        
+        if (product.variants.length === 0) {
+          errors.push(`Row ${i+1}: No variants found for "${product.name}"`);
+          continue;
+        }
+        
+        if (!product.name) {
+          errors.push(`Row ${i+1}: Missing product name`);
+          continue;
+        }
+        
+        // Save to database
+        product.created_at = new Date();
+        product.updated_at = new Date();
+        const result = await db.collection('products').insertOne(product);
+        imported.push({ ...product, _id: result.insertedId });
+        
+      } catch (err) {
+        errors.push(`Row ${i+1}: ${err.message}`);
+      }
+    }
+    
+    clearProductCache();
+    clearStatsCache();
+    
+    res.json({ 
+      success: true, 
+      imported: imported.length, 
+      errors: errors,
+      products: imported,
+      message: `Imported ${imported.length} products${errors.length > 0 ? `, ${errors.length} errors` : ''}`
+    });
+    
+  } catch (err) {
+    console.error('Google Sheets import error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to import from Google Sheets: ' + err.message });
+  }
+});
+
+// 2. EXPORT products to Google Sheets (creates/updates a sheet)
+app.get('/api/admin/export-sheet', requireAdmin, async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    
+    if (!GOOGLE_SHEETS_API_KEY) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Google Sheets API key not configured. Set GOOGLE_SHEETS_API_KEY in environment variables.' 
+      });
+    }
+    
+    const products = await db.collection('products').find({}).sort({ created_at: -1 }).toArray();
+    
+    // Build CSV
+    let csv = 'Name,Category,Badge,Image,Description,Trending,New,Rating';
+    
+    // Find max variants
+    let maxVariants = 0;
+    products.forEach(p => {
+      if (p.variants && p.variants.length > maxVariants) {
+        maxVariants = p.variants.length;
+      }
+    });
+    
+    // Add variant headers
+    for (let i = 1; i <= maxVariants; i++) {
+      csv += `,Size${i},Price${i},Discount${i}`;
+    }
+    csv += '\n';
+    
+    // Add product rows
+    products.forEach(p => {
+      let row = `"${(p.name || '').replace(/"/g, '""')}",`;
+      row += `"${(p.category || '').replace(/"/g, '""')}",`;
+      row += `"${(p.badge || '').replace(/"/g, '""')}",`;
+      row += `"${(p.image || '').replace(/"/g, '""')}",`;
+      row += `"${(p.description || '').replace(/"/g, '""')}",`;
+      row += `${p.isTrending ? 'TRUE' : 'FALSE'},`;
+      row += `${p.isNew ? 'TRUE' : 'FALSE'},`;
+      row += `${p.rating || 4}`;
+      
+      if (p.variants) {
+        p.variants.forEach(v => {
+          row += `,${v.size},${v.price},${v.discount || 0}`;
+        });
+        // Pad empty variant columns
+        for (let i = p.variants.length; i < maxVariants; i++) {
+          row += ',,';
+        }
+      }
+      csv += row + '\n';
+    });
+    
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename=liquorbelle_products_export.csv');
+    res.send(csv);
+    
+  } catch (err) {
+    console.error('Export error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to export products' });
+  }
+});
+
+// 3. GET sheet info (list available sheets)
+app.get('/api/admin/sheet-info', requireAdmin, async (req, res) => {
+  try {
+    if (!GOOGLE_SHEETS_API_KEY) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Google Sheets API key not configured' 
+      });
+    }
+    
+    const sheetId = req.query.spreadsheetId || GOOGLE_SHEETS_SPREADSHEET_ID;
+    if (!sheetId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Spreadsheet ID required' 
+      });
+    }
+    
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?key=${GOOGLE_SHEETS_API_KEY}`;
+    const response = await axios.get(url);
+    
+    const sheets = response.data.sheets.map(s => ({
+      name: s.properties.title,
+      sheetId: s.properties.sheetId,
+      index: s.properties.index
+    }));
+    
+    res.json({ success: true, sheets });
+    
+  } catch (err) {
+    console.error('Sheet info error:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to get sheet info: ' + err.message });
   }
 });
 
@@ -1201,6 +1503,7 @@ app.get('/api/health', (req, res) => {
     status: 'ok', 
     database: db ? 'connected' : 'disconnected', 
     uptime: process.uptime(),
+    categories: Object.keys(CATEGORIES),
     cache: {
       orders: orderCache.keys(),
       products: productCache.keys(),
@@ -1216,6 +1519,12 @@ connectDB().then(() => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📧 Email: ${BREVO_API_KEY ? '✅' : '❌'}`);
     console.log(`🗄️ MongoDB: ${db ? '✅ Connected (secure TLS)' : '❌ Not connected'}`);
+    console.log(`📊 Google Sheets: ${GOOGLE_SHEETS_API_KEY ? '✅ Configured' : '❌ Not configured'}`);
+    console.log(``);
+    console.log(`📂 CATEGORIES (12):`);
+    Object.keys(CATEGORIES).forEach(cat => {
+      console.log(`   ${cat}: ${CATEGORIES[cat]}`);
+    });
     console.log(``);
     console.log(`🔑 DEFAULT PASSWORDS:`);
     console.log(`   Admin (admin-full.html): ${DEFAULT_ADMIN_PASSWORD}`);
