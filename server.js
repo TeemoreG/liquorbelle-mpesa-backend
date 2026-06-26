@@ -101,8 +101,9 @@ app.use(express.json({ limit: '10mb' }));
 app.use(compression());
 
 // ==================== DEFAULT PASSWORDS ====================
-const DEFAULT_ADMIN_PASSWORD = 'admin123';
-const DEFAULT_CASHIER_PASSWORD = 'cashier1234';
+// Allow override from environment variables
+const DEFAULT_ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+const DEFAULT_CASHIER_PASSWORD = process.env.CASHIER_PASSWORD || 'cashier1234';
 
 // ==================== EMAIL VALIDATION ====================
 function isValidEmail(email) {
@@ -1139,7 +1140,7 @@ app.get('/api/admin/export-sheet', requireAdmin, async (req, res) => {
           row += `,${v.size},${v.price},${v.discount || 0}`;
         });
         for (let i = p.variants.length; i < maxVariants; i++) {
-          row += ',,';
+          row += ',,'; 
         }
       }
       csv += row + '\n';
@@ -1741,11 +1742,12 @@ app.get('/api/health', (req, res) => {
 // ==================== START ====================
 const PORT = process.env.PORT || 10000;
 connectDB().then(() => {
-  app.listen(PORT, () => {
+  // ✅ FIXED: Bind to 0.0.0.0 so Render can detect the open port
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📧 Email: ${BREVO_API_KEY ? '✅' : '❌'}`);
     console.log(`🗄️ MongoDB: ${db ? '✅ Connected (secure TLS)' : '❌ Not connected'}`);
-    console.log(`📊 Google Sheets: ${GOOGLE_SHEETS_API_KEY ? '✅ Configured' : '❌ Not configured'}`);
+    console.log(`📊 Google Sheets: ${GOOGLE_SHEETS_API_KEY ? '✅ Configured' : '❌ Not configured (set GOOGLE_SHEETS_API_KEY to enable)'}`);
     console.log(``);
     console.log(`📂 CATEGORIES (12):`);
     Object.keys(CATEGORIES).forEach(cat => {
