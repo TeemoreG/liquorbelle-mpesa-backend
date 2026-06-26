@@ -3,11 +3,14 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const compression = require('compression');
+const helmet = require('helmet');
+const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const { MongoClient, ObjectId } = require('mongodb');
 const NodeCache = require('node-cache');
 const bcrypt = require('bcryptjs');
 const { body, validationResult } = require('express-validator');
+const jwt = require('jsonwebtoken');
 
 // ==================== CATEGORY CONFIG ====================
 const CATEGORIES = {
@@ -64,7 +67,35 @@ if (!process.env.JWT_SECRET) {
 }
 
 const app = express();
-app.use(cors());
+
+// ==================== SECURITY MIDDLEWARE ====================
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      connectSrc: ["'self'", "https://liquorbelle-mpesa-backend.onrender.com", "https://api.brevo.com", "https://sandbox.safaricom.co.ke"],
+      imgSrc: ["'self'", "data:", "https://res.cloudinary.com"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com", "https://fonts.googleapis.com"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com", "https://unpkg.com"],
+    },
+  },
+}));
+
+// ==================== CORS ====================
+app.use(cors({
+  origin: ['https://teemoreg.github.io', 'http://localhost:3000', 'http://localhost:5500'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// ==================== LOGGING ====================
+app.use(morgan('combined', {
+  skip: (req) => req.path === '/api/health'
+}));
+
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '10mb' }));
 app.use(compression());
@@ -129,7 +160,6 @@ app.use('/api/admin/', adminLimiter);
 
 // ==================== JWT ====================
 const JWT_SECRET = process.env.JWT_SECRET;
-const jwt = require('jsonwebtoken');
 
 // ==================== MIDDLEWARE ====================
 function requireAdminOrCashier(req, res, next) {
@@ -281,7 +311,10 @@ async function connectDB() {
       family: 4,
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
-      connectTimeoutMS: 10000
+      connectTimeoutMS: 10000,
+      maxPoolSize: 10,
+      minPoolSize: 2,
+      maxIdleTimeMS: 30000,
     });
     await client.connect();
     db = client.db('liquorbelle');
@@ -415,7 +448,7 @@ async function sendMpesaOrderReceivedEmail(orderData) {
       to: [{ email: customerEmail }],
       subject: `✅ Payment Received - ${orderId} - LiquorBelle`,
       htmlContent: html
-    }, { headers: { 'api-key': BREVO_API_KEY } });
+    }, { headers: { 'api-key': BREVO_API_KEY }, timeout: 10000 });
     console.log(`📧 M-PESA payment received email sent to ${customerEmail}`);
   } catch (err) { console.error('Email error:', err.message); }
 }
@@ -476,7 +509,7 @@ async function sendOrderDeliveredEmail(orderData) {
       to: [{ email: customerEmail }],
       subject: `✅ Order Delivered - ${orderId} - LiquorBelle`,
       htmlContent: html
-    }, { headers: { 'api-key': BREVO_API_KEY } });
+    }, { headers: { 'api-key': BREVO_API_KEY }, timeout: 10000 });
     console.log(`📧 Order delivered email sent to ${customerEmail}`);
   } catch (err) { console.error('Email error:', err.message); }
 }
@@ -484,6 +517,10 @@ async function sendOrderDeliveredEmail(orderData) {
 // ==================== ADMIN LOGIN ====================
 app.post('/api/admin/login', async (req, res) => {
   const { password } = req.body;
+  if (!password) {
+    return res.status(400).json({ success: false, message: 'Password required' });
+  }
+  
   const activePasswords = await getActivePasswords();
   
   console.log(`Admin login attempt`);
@@ -499,6 +536,10 @@ app.post('/api/admin/login', async (req, res) => {
 // ==================== CASHIER LOGIN ====================
 app.post('/api/cashier/login', async (req, res) => {
   const { password } = req.body;
+  if (!password) {
+    return res.status(400).json({ success: false, message: 'Password required' });
+  }
+  
   const activePasswords = await getActivePasswords();
   
   console.log(`Cashier login attempt`);
@@ -518,13 +559,23 @@ app.post('/api/admin/update-passwords', requireAdmin, async (req, res) => {
     let updateValue = {};
     
     if (adminPassword !== undefined && adminPassword !== '') {
+      if (adminPassword.length < 6) {
+        return res.status(400).json({ success: false, message: 'Admin password must be at least 6 characters' });
+      }
       updateValue.adminPasswordHash = await bcrypt.hash(adminPassword, 10);
       console.log(`   Admin password updated`);
     }
     
     if (cashierPassword !== undefined && cashierPassword !== '') {
+      if (cashierPassword.length < 6) {
+        return res.status(400).json({ success: false, message: 'Cashier password must be at least 6 characters' });
+      }
       updateValue.cashierPasswordHash = await bcrypt.hash(cashierPassword, 10);
       console.log(`   Cashier password updated`);
+    }
+    
+    if (Object.keys(updateValue).length === 0) {
+      return res.status(400).json({ success: false, message: 'At least one password required' });
     }
     
     updateValue.updated_at = new Date();
@@ -575,6 +626,7 @@ app.post('/api/orders/track', async (req, res) => {
     orderCache.set(cacheKey, orders);
     res.json({ success: true, orders });
   } catch (err) {
+    console.error('Track orders error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch orders' });
   }
 });
@@ -591,13 +643,19 @@ let mpesaTokenExpiry = 0;
 
 async function getMpesaAccessToken() {
   if (mpesaAccessToken && Date.now() < mpesaTokenExpiry - 60000) return mpesaAccessToken;
-  const auth = Buffer.from(`${CONSUMER_KEY}:${CONSUMER_SECRET}`).toString('base64');
-  const res = await axios.get(`${baseURL}/oauth/v1/generate?grant_type=client_credentials`, {
-    headers: { Authorization: `Basic ${auth}` }
-  });
-  mpesaAccessToken = res.data.access_token;
-  mpesaTokenExpiry = Date.now() + (res.data.expires_in * 1000);
-  return mpesaAccessToken;
+  try {
+    const auth = Buffer.from(`${CONSUMER_KEY}:${CONSUMER_SECRET}`).toString('base64');
+    const res = await axios.get(`${baseURL}/oauth/v1/generate?grant_type=client_credentials`, {
+      headers: { Authorization: `Basic ${auth}` },
+      timeout: 10000
+    });
+    mpesaAccessToken = res.data.access_token;
+    mpesaTokenExpiry = Date.now() + (res.data.expires_in * 1000);
+    return mpesaAccessToken;
+  } catch (err) {
+    console.error('M-PESA token error:', err.message);
+    throw new Error('Failed to get M-PESA access token');
+  }
 }
 
 function formatPhone(phone) {
@@ -610,67 +668,131 @@ function formatPhone(phone) {
 app.post('/api/stkpush', stkLimiter, async (req, res) => {
   try {
     const { phone, orderId, customerName, address, items, subtotal, delivery, total, customerEmail } = req.body;
+    
+    if (!phone || !orderId || !total) {
+      return res.status(400).json({ success: false, message: 'Phone, orderId, and total required' });
+    }
+    
+    if (total < 1) {
+      return res.status(400).json({ success: false, message: 'Invalid total amount' });
+    }
+    
     const formattedPhone = formatPhone(phone);
     const timestamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14);
     const password = Buffer.from(`${SHORTCODE}${PASSKEY}${timestamp}`).toString('base64');
     const token = await getMpesaAccessToken();
 
     await axios.post(`${baseURL}/mpesa/stkpush/v1/processrequest`, {
-      BusinessShortCode: SHORTCODE, Password: password, Timestamp: timestamp,
-      TransactionType: 'CustomerPayBillOnline', Amount: Math.round(total),
-      PartyA: formattedPhone, PartyB: SHORTCODE, PhoneNumber: formattedPhone,
+      BusinessShortCode: SHORTCODE,
+      Password: password,
+      Timestamp: timestamp,
+      TransactionType: 'CustomerPayBillOnline',
+      Amount: Math.round(total),
+      PartyA: formattedPhone,
+      PartyB: SHORTCODE,
+      PhoneNumber: formattedPhone,
       CallBackURL: `https://liquorbelle-mpesa-backend.onrender.com/api/callback`,
-      AccountReference: orderId, TransactionDesc: `LiquorBelle Order ${orderId}`
-    }, { headers: { Authorization: `Bearer ${token}` } });
+      AccountReference: orderId,
+      TransactionDesc: `LiquorBelle Order ${orderId}`
+    }, {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 15000
+    });
 
-    await db.collection('pending_orders').insertOne({ orderId, customerName, phone: formattedPhone, address, items, subtotal, delivery, total, customerEmail, created_at: new Date(), paid: false });
+    await db.collection('pending_orders').insertOne({
+      orderId,
+      customerName,
+      phone: formattedPhone,
+      address,
+      items,
+      subtotal,
+      delivery,
+      total,
+      customerEmail,
+      created_at: new Date(),
+      paid: false
+    });
+    
     res.json({ success: true });
   } catch (err) {
     console.error('STK Push error:', err.message);
-    res.status(500).json({ success: false, message: 'Payment request failed' });
+    res.status(500).json({ success: false, message: 'Payment request failed: ' + err.message });
   }
 });
 
 app.post('/api/callback', async (req, res) => {
-  const stkCallback = req.body?.Body?.stkCallback;
-  if (!stkCallback) return res.json({ ResultCode: 0 });
-  const orderId = stkCallback.CallbackMetadata?.Item?.find(i => i.Name === 'AccountReference')?.Value;
-  if (stkCallback.ResultCode === 0 && orderId) {
-    console.log(`✅ Payment successful for order ${orderId}`);
-    const pending = await db.collection('pending_orders').findOne({ orderId });
-    if (pending) {
-      await db.collection('orders').updateOne(
-        { order_number: orderId },
-        { $set: { status: 'paid', payment_method: 'M-PESA', updated_at: new Date() } },
-        { upsert: true }
-      );
-      
-      await sendMpesaOrderReceivedEmail({
-        orderId, customerName: pending.customerName, items: pending.items,
-        subtotal: pending.subtotal, delivery: pending.delivery, total: pending.total,
-        address: pending.address, phone: pending.phone,
-        customerEmail: pending.customerEmail
-      });
-      
-      await db.collection('pending_orders').updateOne({ orderId }, { $set: { paid: true } });
-      
-      clearOrderCache();
-      if (pending.customerEmail) {
-        const cacheKey = 'orders_' + pending.customerEmail.toLowerCase();
-        orderCache.del(cacheKey);
-      }
+  try {
+    const stkCallback = req.body?.Body?.stkCallback;
+    if (!stkCallback) {
+      return res.json({ ResultCode: 0 });
     }
+    
+    const orderId = stkCallback.CallbackMetadata?.Item?.find(i => i.Name === 'AccountReference')?.Value;
+    
+    if (stkCallback.ResultCode === 0 && orderId) {
+      console.log(`✅ Payment successful for order ${orderId}`);
+      
+      const pending = await db.collection('pending_orders').findOne({ orderId });
+      if (pending) {
+        await db.collection('orders').updateOne(
+          { order_number: orderId },
+          { 
+            $set: { 
+              status: 'paid', 
+              payment_method: 'M-PESA', 
+              updated_at: new Date() 
+            } 
+          },
+          { upsert: true }
+        );
+        
+        await sendMpesaOrderReceivedEmail({
+          orderId,
+          customerName: pending.customerName,
+          items: pending.items,
+          subtotal: pending.subtotal,
+          delivery: pending.delivery,
+          total: pending.total,
+          address: pending.address,
+          phone: pending.phone,
+          customerEmail: pending.customerEmail
+        });
+        
+        await db.collection('pending_orders').updateOne(
+          { orderId },
+          { $set: { paid: true } }
+        );
+        
+        clearOrderCache();
+        if (pending.customerEmail) {
+          orderCache.del('orders_' + pending.customerEmail.toLowerCase());
+        }
+      }
+    } else {
+      console.log(`❌ Payment failed for order ${orderId}: ${stkCallback.ResultDesc}`);
+    }
+    
+    res.json({ ResultCode: 0 });
+  } catch (err) {
+    console.error('Callback error:', err);
+    res.json({ ResultCode: 0 });
   }
-  res.json({ ResultCode: 0 });
 });
 
 app.get('/api/status/:orderId', async (req, res) => {
-  const pending = await db.collection('pending_orders').findOne({ orderId: req.params.orderId });
-  const order = await db.collection('orders').findOne({ order_number: req.params.orderId });
-  if (order) {
-    res.json({ status: order.status || 'pending' });
-  } else {
-    res.json({ status: pending?.paid ? 'paid' : 'pending' });
+  try {
+    const pending = await db.collection('pending_orders').findOne({ orderId: req.params.orderId });
+    const order = await db.collection('orders').findOne({ order_number: req.params.orderId });
+    
+    if (order) {
+      res.json({ status: order.status || 'pending' });
+    } else if (pending) {
+      res.json({ status: pending.paid ? 'paid' : 'pending' });
+    } else {
+      res.json({ status: 'not_found' });
+    }
+  } catch (err) {
+    res.json({ status: 'pending' });
   }
 });
 
@@ -679,7 +801,17 @@ app.post('/api/send-order-email', async (req, res) => {
   const { email, orderId, customerName, phone, items, subtotal, delivery, total, address, timestamp, paymentMethod } = req.body;
   if (!BREVO_API_KEY) return res.json({ success: false });
   
-  await sendMpesaOrderReceivedEmail({ orderId, customerName, items, subtotal, delivery, total, address, phone, customerEmail: email });
+  await sendMpesaOrderReceivedEmail({ 
+    orderId, 
+    customerName, 
+    items, 
+    subtotal, 
+    delivery, 
+    total, 
+    address, 
+    phone, 
+    customerEmail: email 
+  });
   res.json({ success: true });
 });
 
@@ -718,11 +850,24 @@ app.post('/api/db/products', requireAdmin, [
   
   try {
     if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    
+    // Validate variants
+    for (const v of req.body.variants) {
+      if (!v.size || !v.price || v.price <= 0) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Each variant must have size and positive price' 
+        });
+      }
+    }
+    
     const product = { ...req.body, created_at: new Date(), updated_at: new Date() };
     const result = await db.collection('products').insertOne(product);
     clearProductCache();
+    clearStatsCache();
     res.json({ success: true, product: { _id: result.insertedId, ...product } });
   } catch (err) {
+    console.error('Error creating product:', err);
     res.status(500).json({ success: false, message: 'Failed to create product' });
   }
 });
@@ -730,10 +875,42 @@ app.post('/api/db/products', requireAdmin, [
 app.put('/api/db/products/:id', requireAdmin, async (req, res) => {
   try {
     if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
-    await db.collection('products').updateOne({ _id: new ObjectId(req.params.id) }, { $set: { ...req.body, updated_at: new Date() } });
+    
+    const { id } = req.params;
+    const updateData = { ...req.body, updated_at: new Date() };
+    
+    // Validate variants if present
+    if (updateData.variants) {
+      if (!Array.isArray(updateData.variants) || updateData.variants.length === 0) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Variants must be a non-empty array' 
+        });
+      }
+      for (const v of updateData.variants) {
+        if (!v.size || !v.price || v.price <= 0) {
+          return res.status(400).json({ 
+            success: false, 
+            message: 'Each variant must have size and positive price' 
+          });
+        }
+      }
+    }
+    
+    const result = await db.collection('products').updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updateData }
+    );
+    
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+    
     clearProductCache();
+    clearStatsCache();
     res.json({ success: true });
   } catch (err) {
+    console.error('Error updating product:', err);
     res.status(500).json({ success: false, message: 'Failed to update product' });
   }
 });
@@ -741,10 +918,18 @@ app.put('/api/db/products/:id', requireAdmin, async (req, res) => {
 app.delete('/api/db/products/:id', requireAdmin, async (req, res) => {
   try {
     if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
-    await db.collection('products').deleteOne({ _id: new ObjectId(req.params.id) });
+    
+    const result = await db.collection('products').deleteOne({ _id: new ObjectId(req.params.id) });
+    
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+    
     clearProductCache();
+    clearStatsCache();
     res.json({ success: true });
   } catch (err) {
+    console.error('Error deleting product:', err);
     res.status(500).json({ success: false, message: 'Failed to delete product' });
   }
 });
@@ -758,6 +943,7 @@ app.delete('/api/db/products/clear', requireAdmin, async (req, res) => {
     clearStatsCache();
     res.json({ success: true, deletedCount: result.deletedCount, message: `Deleted ${result.deletedCount} products` });
   } catch (err) {
+    console.error('Error clearing products:', err);
     res.status(500).json({ success: false, message: 'Failed to clear products' });
   }
 });
@@ -791,18 +977,16 @@ app.get('/api/admin/category-stats', requireAdmin, async (req, res) => {
     statsCache.set('category_stats', stats);
     res.json({ success: true, stats });
   } catch (err) {
+    console.error('Error fetching category stats:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch category stats' });
   }
 });
 
 // ==================== GOOGLE SHEETS INTEGRATION ====================
-// GOOGLE SHEETS API ENDPOINTS
-
-// Environment variables for Google Sheets
 const GOOGLE_SHEETS_API_KEY = process.env.GOOGLE_SHEETS_API_KEY;
 const GOOGLE_SHEETS_SPREADSHEET_ID = process.env.GOOGLE_SHEETS_SPREADSHEET_ID;
 
-// 1. IMPORT from Google Sheets (via API Key - public sheets only)
+// 1. IMPORT from Google Sheets
 app.post('/api/admin/import-sheet', requireAdmin, async (req, res) => {
   try {
     if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
@@ -825,16 +1009,14 @@ app.post('/api/admin/import-sheet', requireAdmin, async (req, res) => {
       });
     }
     
-    // Fetch data from Google Sheets
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${sheetRange}?key=${GOOGLE_SHEETS_API_KEY}`;
-    const response = await axios.get(url);
+    const response = await axios.get(url, { timeout: 30000 });
     
     const rows = response.data.values;
     if (!rows || rows.length < 2) {
       return res.status(400).json({ success: false, message: 'No data found in sheet' });
     }
     
-    // Parse headers
     const headers = rows[0].map(h => h.trim().toLowerCase());
     const imported = [];
     const errors = [];
@@ -846,7 +1028,6 @@ app.post('/api/admin/import-sheet', requireAdmin, async (req, res) => {
         obj[headers[j]] = row[j] || '';
       }
       
-      // Skip empty rows
       if (!obj.name && !obj['product name']) continue;
       
       try {
@@ -862,13 +1043,11 @@ app.post('/api/admin/import-sheet', requireAdmin, async (req, res) => {
           variants: []
         };
         
-        // Collect variants (Size1, Price1, Discount1, Size2, Price2, Discount2, ...)
         for (let k = 1; k <= 10; k++) {
           const sizeKey = 'size' + k;
           const priceKey = 'price' + k;
           const discountKey = 'discount' + k;
           
-          // Check both lowercase and original case
           let size = obj[sizeKey] || obj['Size' + k] || obj['SIZE' + k] || '';
           let price = parseFloat(obj[priceKey] || obj['Price' + k] || obj['PRICE' + k] || 0);
           let discount = parseInt(obj[discountKey] || obj['Discount' + k] || obj['DISCOUNT' + k] || 0);
@@ -878,7 +1057,6 @@ app.post('/api/admin/import-sheet', requireAdmin, async (req, res) => {
           }
         }
         
-        // If no variants found, try looking for single variant columns
         if (product.variants.length === 0) {
           const size = obj.size || obj['Size'] || obj['SIZE'] || '750ml';
           const price = parseFloat(obj.price || obj['Price'] || obj['PRICE'] || 0);
@@ -898,7 +1076,6 @@ app.post('/api/admin/import-sheet', requireAdmin, async (req, res) => {
           continue;
         }
         
-        // Save to database
         product.created_at = new Date();
         product.updated_at = new Date();
         const result = await db.collection('products').insertOne(product);
@@ -926,24 +1103,15 @@ app.post('/api/admin/import-sheet', requireAdmin, async (req, res) => {
   }
 });
 
-// 2. EXPORT products to Google Sheets (creates/updates a sheet)
+// 2. EXPORT products to CSV
 app.get('/api/admin/export-sheet', requireAdmin, async (req, res) => {
   try {
     if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
     
-    if (!GOOGLE_SHEETS_API_KEY) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Google Sheets API key not configured. Set GOOGLE_SHEETS_API_KEY in environment variables.' 
-      });
-    }
-    
     const products = await db.collection('products').find({}).sort({ created_at: -1 }).toArray();
     
-    // Build CSV
     let csv = 'Name,Category,Badge,Image,Description,Trending,New,Rating';
     
-    // Find max variants
     let maxVariants = 0;
     products.forEach(p => {
       if (p.variants && p.variants.length > maxVariants) {
@@ -951,13 +1119,11 @@ app.get('/api/admin/export-sheet', requireAdmin, async (req, res) => {
       }
     });
     
-    // Add variant headers
     for (let i = 1; i <= maxVariants; i++) {
       csv += `,Size${i},Price${i},Discount${i}`;
     }
     csv += '\n';
     
-    // Add product rows
     products.forEach(p => {
       let row = `"${(p.name || '').replace(/"/g, '""')}",`;
       row += `"${(p.category || '').replace(/"/g, '""')}",`;
@@ -972,7 +1138,6 @@ app.get('/api/admin/export-sheet', requireAdmin, async (req, res) => {
         p.variants.forEach(v => {
           row += `,${v.size},${v.price},${v.discount || 0}`;
         });
-        // Pad empty variant columns
         for (let i = p.variants.length; i < maxVariants; i++) {
           row += ',,';
         }
@@ -990,7 +1155,7 @@ app.get('/api/admin/export-sheet', requireAdmin, async (req, res) => {
   }
 });
 
-// 3. GET sheet info (list available sheets)
+// 3. GET sheet info
 app.get('/api/admin/sheet-info', requireAdmin, async (req, res) => {
   try {
     if (!GOOGLE_SHEETS_API_KEY) {
@@ -1009,7 +1174,7 @@ app.get('/api/admin/sheet-info', requireAdmin, async (req, res) => {
     }
     
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?key=${GOOGLE_SHEETS_API_KEY}`;
-    const response = await axios.get(url);
+    const response = await axios.get(url, { timeout: 10000 });
     
     const sheets = response.data.sheets.map(s => ({
       name: s.properties.title,
@@ -1039,6 +1204,7 @@ app.get('/api/db/orders', requireAdmin, async (req, res) => {
     orderCache.set('all_orders', orders);
     res.json({ success: true, orders });
   } catch (err) {
+    console.error('Error fetching orders:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch orders' });
   }
 });
@@ -1096,7 +1262,19 @@ app.put('/api/db/orders/:id/status', requireAdmin, async (req, res) => {
   try {
     if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
     const { status } = req.body;
-    await db.collection('orders').updateOne({ _id: new ObjectId(req.params.id) }, { $set: { status, updated_at: new Date() } });
+    
+    if (!['pending', 'paid', 'delivered'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status' });
+    }
+    
+    const result = await db.collection('orders').updateOne(
+      { _id: new ObjectId(req.params.id) }, 
+      { $set: { status, updated_at: new Date() } }
+    );
+    
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
     
     clearOrderCache();
     
@@ -1117,6 +1295,7 @@ app.put('/api/db/orders/:id/status', requireAdmin, async (req, res) => {
     }
     res.json({ success: true });
   } catch (err) {
+    console.error('Error updating order status:', err);
     res.status(500).json({ success: false, message: 'Failed to update order status' });
   }
 });
@@ -1126,10 +1305,19 @@ app.put('/api/cashier/orders/:id/status', requireAdminOrCashier, async (req, res
   try {
     if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
     const { status } = req.body;
-    await db.collection('orders').updateOne(
+    
+    if (!['pending', 'paid', 'delivered'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status' });
+    }
+    
+    const result = await db.collection('orders').updateOne(
       { _id: new ObjectId(req.params.id) }, 
       { $set: { status, updated_at: new Date() } }
     );
+    
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
     
     clearOrderCache();
     
@@ -1159,6 +1347,9 @@ app.delete('/api/db/orders/:id', requireAdmin, async (req, res) => {
   try {
     if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
     const order = await db.collection('orders').findOne({ _id: new ObjectId(req.params.id) });
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
     await db.collection('orders').deleteOne({ _id: new ObjectId(req.params.id) });
     clearOrderCache();
     if (order && order.customer_email) {
@@ -1167,6 +1358,7 @@ app.delete('/api/db/orders/:id', requireAdmin, async (req, res) => {
     }
     res.json({ success: true });
   } catch (err) {
+    console.error('Error deleting order:', err);
     res.status(500).json({ success: false, message: 'Failed to delete order' });
   }
 });
@@ -1231,6 +1423,7 @@ app.get('/api/admin/reports/daily', requireAdminOrCashier, async (req, res) => {
     statsCache.set('stats_daily', report);
     res.json({ success: true, report });
   } catch (err) {
+    console.error('Error generating daily report:', err);
     res.status(500).json({ success: false, message: 'Failed to generate report' });
   }
 });
@@ -1248,6 +1441,7 @@ app.get('/api/admin/reports/weekly', requireAdminOrCashier, async (req, res) => 
     statsCache.set('stats_weekly', report);
     res.json({ success: true, report });
   } catch (err) {
+    console.error('Error generating weekly report:', err);
     res.status(500).json({ success: false, message: 'Failed to generate report' });
   }
 });
@@ -1265,6 +1459,7 @@ app.get('/api/admin/reports/monthly', requireAdminOrCashier, async (req, res) =>
     statsCache.set('stats_monthly', report);
     res.json({ success: true, report });
   } catch (err) {
+    console.error('Error generating monthly report:', err);
     res.status(500).json({ success: false, message: 'Failed to generate report' });
   }
 });
@@ -1288,10 +1483,18 @@ app.get('/api/db/stats', requireAdmin, async (req, res) => {
       db.collection('orders').countDocuments({ status: 'delivered' })
     ]);
     
-    const stats = { totalOrders, totalProducts, totalRevenue: revenueResult[0]?.total || 0, pendingOrders: pending, paidOrders: paid, deliveredOrders: delivered };
+    const stats = { 
+      totalOrders, 
+      totalProducts, 
+      totalRevenue: revenueResult[0]?.total || 0, 
+      pendingOrders: pending, 
+      paidOrders: paid, 
+      deliveredOrders: delivered 
+    };
     statsCache.set('legacy_stats', stats);
     res.json({ success: true, stats });
   } catch (err) {
+    console.error('Error fetching stats:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch stats' });
   }
 });
@@ -1320,9 +1523,25 @@ app.get('/api/admin/delivery-settings', requireAdmin, async (req, res) => {
 app.post('/api/admin/delivery-settings', requireAdmin, async (req, res) => {
   try {
     if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
-    await db.collection('settings').updateOne({ key: 'delivery' }, { $set: { value: req.body, updated_at: new Date() } }, { upsert: true });
+    
+    const { delivery_fee, free_delivery_threshold, delivery_enabled } = req.body;
+    await db.collection('settings').updateOne(
+      { key: 'delivery' },
+      { 
+        $set: { 
+          value: { 
+            delivery_fee: delivery_fee || 0, 
+            free_delivery_threshold: free_delivery_threshold || 0, 
+            delivery_enabled: delivery_enabled !== false 
+          }, 
+          updated_at: new Date() 
+        } 
+      },
+      { upsert: true }
+    );
     res.json({ success: true });
   } catch (err) {
+    console.error('Error saving delivery settings:', err);
     res.status(500).json({ success: false, message: 'Failed to update delivery settings' });
   }
 });
@@ -1377,6 +1596,7 @@ app.get('/api/admin/recent-orders', requireAdminOrCashier, async (req, res) => {
     orderCache.set('recent_orders', orders);
     res.json({ success: true, orders });
   } catch (err) {
+    console.error('Error fetching recent orders:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch recent orders' });
   }
 });
@@ -1428,6 +1648,7 @@ app.post('/api/customers/register', [
     await db.collection('customers').insertOne(customer);
     res.json({ success: true, customer });
   } catch (err) {
+    console.error('Error registering customer:', err);
     res.status(500).json({ success: false, message: 'Failed to register customer' });
   }
 });
@@ -1441,6 +1662,7 @@ app.get('/api/customers/:email', async (req, res) => {
     }
     res.json({ success: true, customer });
   } catch (err) {
+    console.error('Error fetching customer:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch customer' });
   }
 });
@@ -1468,6 +1690,7 @@ app.put('/api/customers/:email/favorites', async (req, res) => {
     );
     res.json({ success: true, favorites });
   } catch (err) {
+    console.error('Error updating favorites:', err);
     res.status(500).json({ success: false, message: 'Failed to update favorites' });
   }
 });
@@ -1484,9 +1707,12 @@ app.post('/api/send-email-otp', otpLimiter, async (req, res) => {
       to: [{ email }],
       subject: 'Your LiquorBelle Verification Code',
       htmlContent: `<div style="text-align:center;padding:40px;"><h2>${otp}</h2><p>Your verification code expires in 10 minutes.</p></div>`
-    }, { headers: { 'api-key': BREVO_API_KEY } });
+    }, { headers: { 'api-key': BREVO_API_KEY }, timeout: 10000 });
     res.json({ success: true });
-  } catch (err) { res.json({ success: false }); }
+  } catch (err) { 
+    console.error('OTP email error:', err.message);
+    res.json({ success: false }); 
+  }
 });
 
 app.post('/api/verify-otp', async (req, res) => {
@@ -1505,9 +1731,9 @@ app.get('/api/health', (req, res) => {
     uptime: process.uptime(),
     categories: Object.keys(CATEGORIES),
     cache: {
-      orders: orderCache.keys(),
-      products: productCache.keys(),
-      stats: statsCache.keys()
+      orders: orderCache.keys().length,
+      products: productCache.keys().length,
+      stats: statsCache.keys().length
     }
   });
 });
@@ -1531,6 +1757,9 @@ connectDB().then(() => {
     console.log(`   Cashier (admin-orders.html): ${DEFAULT_CASHIER_PASSWORD}`);
     console.log(``);
     console.log(`🔒 SECURITY:`);
+    console.log(`   ✅ Helmet security headers enabled`);
+    console.log(`   ✅ CORS configured with allowed origins`);
+    console.log(`   ✅ Rate limiting enabled`);
     console.log(`   ✅ Passwords stored as bcrypt hashes`);
     console.log(`   ✅ TLS certificate validation ENABLED`);
     console.log(`   ✅ Order creation requires authentication`);
@@ -1543,7 +1772,27 @@ connectDB().then(() => {
     console.log(`   Orders: 1 minute (TTL)`);
     console.log(`   Stats: 5 minutes (TTL)`);
     console.log(`   Daily stats auto-refresh every 24 hours`);
+    console.log(`   Connection pool: min 2, max 10`);
   });
 }).catch(err => {
   console.error('Failed to start server:', err);
+});
+
+// ==================== GRACEFUL SHUTDOWN ====================
+process.on('SIGTERM', async () => {
+  console.log('🛑 SIGTERM received, closing server...');
+  if (client) {
+    await client.close();
+    console.log('✅ MongoDB connection closed');
+  }
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('🛑 SIGINT received, closing server...');
+  if (client) {
+    await client.close();
+    console.log('✅ MongoDB connection closed');
+  }
+  process.exit(0);
 });
