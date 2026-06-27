@@ -291,7 +291,20 @@ function clearOrderCache() {
 function clearProductCache() {
   productCache.del('all_products');
   productCache.del('category_stats');
+  // Also clear any individual product caches
+  const keys = productCache.keys();
+  for (const key of keys) {
+    if (key.startsWith('product_')) {
+      productCache.del(key);
+    }
+  }
   console.log('🧹 Product cache cleared');
+}
+
+function clearProductCacheById(id) {
+  const key = 'product_' + id;
+  productCache.del(key);
+  console.log(`🧹 Product cache cleared for ${key}`);
 }
 
 function clearStatsCache() {
@@ -817,6 +830,12 @@ app.post('/api/send-order-email', async (req, res) => {
 });
 
 // ==================== PRODUCT CRUD ====================
+// Cache-Control header for all product responses
+app.use('/api/db/products', (req, res, next) => {
+  res.set('Cache-Control', 'public, max-age=300'); // 5 minutes
+  next();
+});
+
 app.get('/api/db/products', async (req, res) => {
   try {
     if (!db) {
@@ -837,6 +856,45 @@ app.get('/api/db/products', async (req, res) => {
   } catch (err) {
     console.error('Error fetching products:', err.message);
     res.status(500).json({ success: false, message: 'Failed to fetch products' });
+  }
+});
+
+// ===== GET SINGLE PRODUCT BY ID =====
+app.get('/api/db/products/:id', async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
+    
+    const { id } = req.params;
+    
+    // Check cache
+    const cacheKey = 'product_' + id;
+    const cached = productCache.get(cacheKey);
+    if (cached) {
+      return res.json({ success: true, product: cached, fromCache: true });
+    }
+    
+    // Validate ObjectId
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: 'Invalid product ID' });
+    }
+    
+    const product = await db.collection('products').findOne({ _id: new ObjectId(id) });
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+    
+    // Cache for 5 minutes
+    productCache.set(cacheKey, product);
+    
+    res.json({ success: true, product });
+  } catch (err) {
+    console.error('Error fetching product:', err.message);
+    res.status(500).json({ success: false, message: 'Failed to fetch product' });
   }
 });
 
@@ -908,6 +966,7 @@ app.put('/api/db/products/:id', requireAdmin, async (req, res) => {
     }
     
     clearProductCache();
+    clearProductCacheById(id);  // clear individual cache
     clearStatsCache();
     res.json({ success: true });
   } catch (err) {
@@ -927,6 +986,7 @@ app.delete('/api/db/products/:id', requireAdmin, async (req, res) => {
     }
     
     clearProductCache();
+    clearProductCacheById(req.params.id);
     clearStatsCache();
     res.json({ success: true });
   } catch (err) {
