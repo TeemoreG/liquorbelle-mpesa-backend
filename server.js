@@ -152,6 +152,15 @@ const adminLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// Rate limiter for geocoding (10 per minute)
+const geocodeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: { success: false, message: 'Too many geocoding requests. Please wait a moment.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 app.use('/api/', generalLimiter);
 app.use('/api/send-email-otp', otpLimiter);
 app.use('/api/stkpush', stkLimiter);
@@ -1155,7 +1164,7 @@ app.post('/api/admin/import-sheet', requireAdmin, async (req, res) => {
       imported: imported.length, 
       errors: errors,
       products: imported,
-      message: `Imported ${imported.length} products${errors.length > 0 ? `, ${errors.length} errors` : ''}`
+      message: `Imported ${imported.length} products${errors.length > 0 ? `, ${errors.length} errors` : ''}` 
     });
     
   } catch (err) {
@@ -1784,6 +1793,31 @@ app.post('/api/verify-otp', async (req, res) => {
   res.json({ success: true });
 });
 
+// ==================== GEOCODING (REVERSE) ====================
+app.post('/api/geocode/reverse', geocodeLimiter, async (req, res) => {
+  const { lat, lng } = req.body;
+  if (!lat || !lng) {
+    return res.status(400).json({ error: 'Latitude and longitude required' });
+  }
+
+  const MAP_MAKER_KEY = process.env.MAP_MAKER_API_KEY;
+  let url;
+  if (MAP_MAKER_KEY) {
+    url = `https://geocode.maps.co/reverse?lat=${lat}&lon=${lng}&api_key=${MAP_MAKER_KEY}`;
+  } else {
+    // Fallback to Nominatim (no key)
+    url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&countrycodes=ke`;
+  }
+
+  try {
+    const response = await axios.get(url, { timeout: 8000 });
+    res.json(response.data);
+  } catch (err) {
+    console.error('Geocoding error:', err.message);
+    res.status(500).json({ error: 'Geocoding failed' });
+  }
+});
+
 // ==================== HEALTH ====================
 app.get('/api/health', (req, res) => {
   res.json({ 
@@ -1802,12 +1836,12 @@ app.get('/api/health', (req, res) => {
 // ==================== START ====================
 const PORT = process.env.PORT || 10000;
 connectDB().then(() => {
-  // ✅ FIXED: Bind to 0.0.0.0 so Render can detect the open port
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📧 Email: ${BREVO_API_KEY ? '✅' : '❌'}`);
     console.log(`🗄️ MongoDB: ${db ? '✅ Connected (secure TLS)' : '❌ Not connected'}`);
     console.log(`📊 Google Sheets: ${GOOGLE_SHEETS_API_KEY ? '✅ Configured' : '❌ Not configured (set GOOGLE_SHEETS_API_KEY to enable)'}`);
+    console.log(`🗺️ Geocoding: ${process.env.MAP_MAKER_API_KEY ? '✅ Map Maker (key set)' : '⚠️ Nominatim (no key, free)'}`);
     console.log(``);
     console.log(`📂 CATEGORIES (12):`);
     Object.keys(CATEGORIES).forEach(cat => {
