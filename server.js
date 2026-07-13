@@ -41,7 +41,37 @@ app.use(helmet({
 
 // ==================== CORS ====================
 app.use(cors({
-  origin: ['https://teemoreg.github.io', 'http://localhost:3000', 'http://localhost:5500'],
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    
+    const allowedOrigins = [
+      'https://teemoreg.github.io',
+      'http://localhost:3000',
+      'http://localhost:5500',
+      'http://127.0.0.1:5500',
+      'http://localhost:8000',
+      'http://127.0.0.1:8000'
+    ];
+    
+    // Allow any localhost port for development
+    if (origin.match(/^http:\/\/localhost:\d+$/)) {
+      return callback(null, true);
+    }
+    if (origin.match(/^http:\/\/127\.0\.0\.1:\d+$/)) {
+      return callback(null, true);
+    }
+    // Allow file:// protocol for local testing
+    if (origin === 'null' || origin === 'file://') {
+      return callback(null, true);
+    }
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']

@@ -1,160 +1,127 @@
 const express = require('express');
-const { body, validationResult } = require('express-validator');
-const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
 const { getDB } = require('../config/database');
-const { verifyPassword, updatePasswords, getActivePasswords } = require('../utils/passwords');
-const { requireAdmin } = require('../middleware/auth');
-const { loginLimiter } = require('../config/rateLimits');
+const { otpLimiter } = require('../config/rateLimits');
+const { sendOTPEmail } = require('../utils/email');
 const { isValidEmail } = require('../config/constants');
-const { generateToken } = require('../config/passport');
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET;
 
-// ==================== ADMIN LOGIN ====================
-router.post('/admin/login', loginLimiter, async (req, res) => {
-  const { password } = req.body;
+// ==================== SEND PHONE OTP (SMS) ====================
+router.post('/send-phone-otp', otpLimiter, async (req, res) => {
+  const { phone, otp } = req.body;
 
-  if (!password) {
-    return res.status(400).json({ success: false, message: 'Password required' });
+  if (!phone || !otp) {
+    return res.status(400).json({ success: false, message: 'Phone and OTP required' });
   }
 
-  const isValid = await verifyPassword(password, 'admin');
-
-  if (isValid) {
-    const token = generateToken('admin', 'admin', '1d');
-    return res.json({ success: true, token, role: 'admin' });
-  }
-
-  res.status(401).json({ success: false, message: 'Invalid admin password' });
-});
-
-// ==================== CASHIER LOGIN ====================
-router.post('/cashier/login', loginLimiter, async (req, res) => {
-  const { password } = req.body;
-
-  if (!password) {
-    return res.status(400).json({ success: false, message: 'Password required' });
-  }
-
-  const isValid = await verifyPassword(password, 'cashier');
-
-  if (isValid) {
-    const token = generateToken('cashier', 'cashier', '1d');
-    return res.json({ success: true, token, role: 'cashier' });
-  }
-
-  res.status(401).json({ success: false, message: 'Invalid cashier password' });
-});
-
-// ==================== CUSTOMER REGISTRATION ====================
-router.post('/customers/register', [
-  body('email').isEmail().withMessage('Valid email required'),
-  body('name').notEmpty().withMessage('Name required'),
-  body('phone').notEmpty().withMessage('Phone required'),
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, errors: errors.array() });
+  const db = getDB();
+  if (!db) {
+    return res.status(503).json({ success: false, message: 'Database connecting...' });
   }
 
   try {
-    const db = getDB();
-    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    // Store OTP with phone as key
+    await db.collection('otps').updateOne(
+      { phone: phone },
+      { $set: { phone, otp, created_at: new Date() } },
+      { upsert: true }
+    );
 
-    const { email, name, phone, address } = req.body;
+    // Log OTP for debugging
+    console.log(`📱 OTP for ${phone}: ${otp}`);
 
-    const existing = await db.collection('customers').findOne({ email: email.toLowerCase() });
-    if (existing) {
-      return res.json({ success: true, customer: existing, message: 'Customer already exists' });
-    }
+    // TODO: Integrate with SMS service (Africa's Talking, Twilio, etc.)
+    // await sendSMS(phone, `Your LiquorBelle verification code is: ${otp}`);
 
-    const customer = {
-      email: email.toLowerCase(),
-      name,
-      phone,
-      address: address || '',
-      orderHistory: [],
-      favorites: [],
-      created_at: new Date(),
-      updated_at: new Date()
-    };
-
-    await db.collection('customers').insertOne(customer);
-    res.json({ success: true, customer });
+    res.json({ success: true, message: 'OTP sent successfully' });
   } catch (err) {
-    console.error('Error registering customer:', err);
-    res.status(500).json({ success: false, message: 'Failed to register customer' });
+    console.error('Phone OTP error:', err);
+    res.status(500).json({ success: false, message: 'Failed to send OTP' });
   }
 });
 
-// ==================== CUSTOMER LOGIN ====================
-router.post('/customers/login', loginLimiter, async (req, res) => {
-  const { email } = req.body;
+// ==================== VERIFY PHONE OTP ====================
+router.post('/verify-phone-otp', async (req, res) => {
+  const { phone, otp } = req.body;
 
-  if (!email) {
-    return res.status(400).json({ success: false, message: 'Email required' });
+  if (!phone || !otp) {
+    return res.status(400).json({ success: false, message: 'Phone and OTP required' });
   }
 
-  if (!isValidEmail(email)) {
-    return res.status(400).json({ success: false, message: 'Invalid email format' });
+  const db = getDB();
+  if (!db) {
+    return res.status(503).json({ success: false, message: 'Database connecting...' });
   }
 
   try {
-    const db = getDB();
-    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    const stored = await db.collection('otps').findOne({ phone });
 
-    const customer = await db.collection('customers').findOne({ email: email.toLowerCase() });
-
-    if (!customer) {
-      return res.status(401).json({ success: false, message: 'Customer not found. Please register first.' });
+    if (!stored || stored.otp !== otp) {
+      return res.status(401).json({ success: false, message: 'Invalid OTP' });
     }
 
-    const token = generateToken(customer._id, 'customer', '7d');
+    // Delete used OTP
+    await db.collection('otps').deleteOne({ phone });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Verify phone OTP error:', err);
+    res.status(500).json({ success: false, message: 'Failed to verify OTP' });
+  }
+});
+
+// ==================== CHECK IF CUSTOMER EXISTS ====================
+router.post('/customer-exists', async (req, res) => {
+  const { phone, email } = req.body;
+
+  if (!phone && !email) {
+    return res.status(400).json({ success: false, message: 'Phone or email required' });
+  }
+
+  const db = getDB();
+  if (!db) {
+    return res.status(503).json({ success: false, message: 'Database connecting...' });
+  }
+
+  try {
+    const query = {};
+    if (phone) query.phone = phone;
+    if (email) query.email = email.toLowerCase();
+
+    const customer = await db.collection('customers').findOne(query);
 
     res.json({
       success: true,
-      token,
-      role: 'customer',
-      customer: {
-        id: customer._id,
-        email: customer.email,
-        name: customer.name,
-        phone: customer.phone,
-        address: customer.address
-      }
+      exists: !!customer,
+      customer: customer || null
     });
   } catch (err) {
-    console.error('Customer login error:', err);
-    res.status(500).json({ success: false, message: 'Login failed' });
+    console.error('Customer exists error:', err);
+    res.status(500).json({ success: false, message: 'Failed to check customer' });
   }
 });
 
-// ==================== UPDATE PASSWORDS (Admin only) ====================
-router.post('/admin/update-passwords', requireAdmin, async (req, res) => {
+// ==================== GET CUSTOMER BY PHONE ====================
+router.get('/customers/phone/:phone', async (req, res) => {
   try {
-    const { adminPassword, cashierPassword } = req.body;
-
-    if (!adminPassword && !cashierPassword) {
-      return res.status(400).json({ success: false, message: 'At least one password required' });
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({ success: false, message: 'Database connecting...' });
     }
 
-    await updatePasswords(adminPassword, cashierPassword);
+    const { phone } = req.params;
 
-    console.log('Passwords updated successfully');
-    res.json({ success: true, message: 'Passwords updated successfully. Old passwords will no longer work.' });
+    const customer = await db.collection('customers').findOne({ phone });
+
+    if (!customer) {
+      return res.status(404).json({ success: false, message: 'Customer not found' });
+    }
+
+    res.json({ success: true, customer });
   } catch (err) {
-    console.error('Error updating passwords:', err);
-    res.status(500).json({ success: false, message: err.message || 'Failed to update passwords' });
+    console.error('Error fetching customer by phone:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch customer' });
   }
-});
-
-// ==================== VERIFY ADMIN/ CASHIER ====================
-router.post('/admin/verify', async (req, res) => {
-  const { password, type } = req.body;
-  const isValid = await verifyPassword(password, type || 'admin');
-  res.json({ success: isValid });
 });
 
 module.exports = router;

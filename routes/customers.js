@@ -7,6 +7,40 @@ const { isValidEmail } = require('../config/constants');
 
 const router = express.Router();
 
+// ==================== HELPER: Validate Phone ====================
+function isValidPhone(phone) {
+  const cleaned = phone.replace(/\D/g, '');
+  return cleaned.length === 10 && (cleaned.startsWith('07') || cleaned.startsWith('01'));
+}
+
+// ==================== GET CUSTOMER BY PHONE ====================
+// IMPORTANT: This MUST come BEFORE /:email to avoid route conflicts
+router.get('/phone/:phone', async (req, res) => {
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({ success: false, message: 'Database connecting...' });
+    }
+
+    const { phone } = req.params;
+
+    if (!isValidPhone(phone)) {
+      return res.status(400).json({ success: false, message: 'Invalid phone number format' });
+    }
+
+    const customer = await db.collection('customers').findOne({ phone });
+
+    if (!customer) {
+      return res.status(404).json({ success: false, message: 'Customer not found' });
+    }
+
+    res.json({ success: true, customer });
+  } catch (err) {
+    console.error('Error fetching customer by phone:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch customer' });
+  }
+});
+
 // ==================== GET CUSTOMER BY EMAIL ====================
 router.get('/:email', async (req, res) => {
   try {
@@ -54,7 +88,12 @@ router.put('/:email', requireCustomer, async (req, res) => {
     };
 
     if (name) updateData.name = name;
-    if (phone) updateData.phone = phone;
+    if (phone) {
+      if (!isValidPhone(phone)) {
+        return res.status(400).json({ success: false, message: 'Invalid phone number format' });
+      }
+      updateData.phone = phone;
+    }
     if (address !== undefined) updateData.address = address;
 
     const result = await db.collection('customers').updateOne(

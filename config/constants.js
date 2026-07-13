@@ -1,80 +1,75 @@
-const { MongoClient } = require('mongodb');
+// ==================== CATEGORIES ====================
+const CATEGORIES = {
+  beer: 'Beer',
+  brandy: 'Brandy',
+  bourbon: 'Bourbon',
+  rum: 'Rum',
+  spirits: 'Spirits',
+  liqueur: 'Liqueur',
+  juice: 'Juice',
+  soda: 'Soda',
+  water: 'Water',
+  energy: 'Energy Drink',
+  cigar: 'Cigar',
+  accessory: 'Accessory'
+};
 
-let db;
-let client;
+const CATEGORY_COLORS = {
+  beer: '#F59E0B',
+  brandy: '#B8860B',
+  bourbon: '#8B4513',
+  rum: '#DC2626',
+  spirits: '#7C3AED',
+  liqueur: '#EC4899',
+  juice: '#EF4444',
+  soda: '#3B82F6',
+  water: '#06B6D4',
+  energy: '#F97316',
+  cigar: '#92400E',
+  accessory: '#6B7280'
+};
 
-async function connectDB() {
-  try {
-    const MONGODB_URI = process.env.MONGODB_URI;
-    if (!MONGODB_URI) {
-      console.error('MONGODB_URI env var not set');
-      process.exit(1);
-    }
+// ==================== DEFAULTS ====================
+const DEFAULT_DELIVERY = {
+  fee: 150,
+  freeThreshold: 3000,
+  enabled: true
+};
 
-    client = new MongoClient(MONGODB_URI, {
-      tls: true,
-      tlsAllowInvalidCertificates: false,
-      family: 4,
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
-      connectTimeoutMS: 10000,
-      maxPoolSize: 10,
-      minPoolSize: 2,
-      maxIdleTimeMS: 30000,
-    });
+const DEFAULT_ORDER_STATUSES = ['pending', 'paid', 'delivered'];
 
-    await client.connect();
-    db = client.db('liquorbelle');
-    console.log('MongoDB connected');
-
-    // Indexes
-    await db.collection('products').createIndex({ name: 1 });
-    await db.collection('products').createIndex({ category: 1 });
-    await db.collection('orders').createIndex({ customer_email: 1 });
-    await db.collection('orders').createIndex({ created_at: -1 });
-    await db.collection('orders').createIndex({ status: 1 });
-    await db.collection('settings').createIndex({ key: 1 });
-    await db.collection('admin_settings').createIndex({ key: 1 });
-    await db.collection('pending_orders').createIndex({ created_at: 1 }, { expireAfterSeconds: 3600 });
-    await db.collection('otps').createIndex({ created_at: 1 }, { expireAfterSeconds: 600 });
-    await db.collection('customers').createIndex({ email: 1 }, { unique: true });
-
-    // Auto-clean pending orders every 30s
-    setInterval(async () => {
-      try {
-        if (!db) return;
-        const cutoffTime = new Date(Date.now() - 35000);
-        const result = await db.collection('pending_orders').deleteMany({
-          paid: false,
-          created_at: { $lt: cutoffTime }
-        });
-        if (result.deletedCount > 0) {
-          console.log(`Cleaned ${result.deletedCount} unpaid pending orders`);
-        }
-      } catch (err) {}
-    }, 30000);
-
-    return db;
-  } catch (err) {
-    console.error('MongoDB connection error:', err.message);
-    console.log('Retrying in 5 seconds...');
-    setTimeout(connectDB, 5000);
-  }
+// ==================== HELPERS ====================
+function getCategoryLabel(category) {
+  return CATEGORIES[category] || category || 'Uncategorized';
 }
 
-function getDB() {
-  return db;
+function getCategoryColor(category) {
+  return CATEGORY_COLORS[category] || '#6B7280';
 }
 
-function getClient() {
-  return client;
+function isValidEmail(email) {
+  const emailRegex = /^[^\s@]+@([^\s@]+\.)+[^\s@]+$/;
+  return emailRegex.test(email);
 }
 
-async function closeDB() {
-  if (client) {
-    await client.close();
-    console.log('MongoDB connection closed');
-  }
+function escapeHtml(str) {
+  if (!str) return '';
+  return str.replace(/[&<>"']/g, m => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[m]));
 }
 
-module.exports = { connectDB, getDB, getClient, closeDB };
+module.exports = {
+  CATEGORIES,
+  CATEGORY_COLORS,
+  DEFAULT_DELIVERY,
+  DEFAULT_ORDER_STATUSES,
+  getCategoryLabel,
+  getCategoryColor,
+  isValidEmail,
+  escapeHtml
+};

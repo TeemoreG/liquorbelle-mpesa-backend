@@ -5,47 +5,93 @@ const productCache = new NodeCache({ stdTTL: 300, checkperiod: 600 });
 const statsCache = new NodeCache({ stdTTL: 300, checkperiod: 600 });
 
 function clearOrderCache() {
-  const keys = orderCache.keys();
-  for (const key of keys) {
-    if (key.startsWith('orders_') || key.startsWith('all_orders') || key.startsWith('recent_')) {
-      orderCache.del(key);
+  try {
+    const keys = orderCache.keys();
+    let deletedCount = 0;
+    for (const key of keys) {
+      if (key.startsWith('orders_') || key.startsWith('all_orders') || key.startsWith('recent_')) {
+        orderCache.del(key);
+        deletedCount++;
+      }
     }
+    console.log(`Order cache cleared: ${deletedCount} keys removed`);
+  } catch (err) {
+    console.error('Error clearing order cache:', err.message);
   }
-  console.log('Order cache cleared');
 }
 
 function clearProductCache() {
-  productCache.del('all_products');
-  productCache.del('category_stats');
-  const keys = productCache.keys();
-  for (const key of keys) {
-    if (key.startsWith('product_')) {
-      productCache.del(key);
+  try {
+    productCache.del('all_products');
+    productCache.del('category_stats');
+    const keys = productCache.keys();
+    let deletedCount = 0;
+    for (const key of keys) {
+      if (key.startsWith('product_')) {
+        productCache.del(key);
+        deletedCount++;
+      }
     }
+    console.log(`Product cache cleared: ${deletedCount + 2} keys removed`);
+  } catch (err) {
+    console.error('Error clearing product cache:', err.message);
   }
-  console.log('Product cache cleared');
 }
 
 function clearProductCacheById(id) {
-  const key = 'product_' + id;
-  productCache.del(key);
-  console.log(`Product cache cleared for ${key}`);
+  try {
+    if (!id) {
+      console.warn('clearProductCacheById called without ID');
+      return;
+    }
+    const key = 'product_' + id;
+    productCache.del(key);
+    console.log(`Product cache cleared for ${key}`);
+  } catch (err) {
+    console.error('Error clearing product cache by ID:', err.message);
+  }
 }
 
 function clearStatsCache() {
-  statsCache.del('stats_daily');
-  statsCache.del('stats_weekly');
-  statsCache.del('stats_monthly');
-  statsCache.del('legacy_stats');
-  statsCache.del('category_stats');
-  console.log('Stats cache cleared');
+  try {
+    const keys = ['stats_daily', 'stats_weekly', 'stats_monthly', 'legacy_stats', 'category_stats'];
+    let deletedCount = 0;
+    for (const key of keys) {
+      statsCache.del(key);
+      deletedCount++;
+    }
+    console.log(`Stats cache cleared: ${deletedCount} keys removed`);
+  } catch (err) {
+    console.error('Error clearing stats cache:', err.message);
+  }
 }
 
 function clearAllCache() {
-  clearOrderCache();
-  clearProductCache();
-  clearStatsCache();
-  console.log('All cache cleared');
+  try {
+    clearOrderCache();
+    clearProductCache();
+    clearStatsCache();
+    console.log('All cache cleared successfully');
+  } catch (err) {
+    console.error('Error clearing all cache:', err.message);
+  }
+}
+
+function getCacheStats() {
+  return {
+    orderCache: {
+      keys: orderCache.keys().length,
+      ttl: orderCache.options.stdTTL
+    },
+    productCache: {
+      keys: productCache.keys().length,
+      ttl: productCache.options.stdTTL
+    },
+    statsCache: {
+      keys: statsCache.keys().length,
+      ttl: statsCache.options.stdTTL
+    }
+  };
 }
 
 module.exports = {
@@ -56,5 +102,6 @@ module.exports = {
   clearProductCache,
   clearProductCacheById,
   clearStatsCache,
-  clearAllCache
+  clearAllCache,
+  getCacheStats
 };
