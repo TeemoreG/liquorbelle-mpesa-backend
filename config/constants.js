@@ -31,7 +31,7 @@ const CATEGORY_COLORS = {
 
 // ==================== DEFAULTS ====================
 const DEFAULT_DELIVERY = {
-  fee: 150,
+  fee: 100,              // ✅ Changed from 150 to 100
   freeThreshold: 3000,
   enabled: true
 };

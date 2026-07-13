@@ -337,7 +337,7 @@ router.get('/delivery-settings', requireAdmin, async (req, res) => {
       return res.json({ 
         success: true, 
         settings: { 
-          delivery_fee: 150, 
+          delivery_fee: 100, 
           free_delivery_threshold: 3000, 
           delivery_enabled: true 
         } 
@@ -349,7 +349,7 @@ router.get('/delivery-settings', requireAdmin, async (req, res) => {
     res.json({ 
       success: true, 
       settings: settings?.value || { 
-        delivery_fee: 150, 
+        delivery_fee: 100, 
         free_delivery_threshold: 3000, 
         delivery_enabled: true 
       } 
@@ -359,7 +359,7 @@ router.get('/delivery-settings', requireAdmin, async (req, res) => {
     res.json({ 
       success: true, 
       settings: { 
-        delivery_fee: 150, 
+        delivery_fee: 100, 
         free_delivery_threshold: 3000, 
         delivery_enabled: true 
       } 
@@ -397,7 +397,7 @@ router.post('/delivery-settings', requireAdmin, [
       {
         $set: {
           value: {
-            delivery_fee: delivery_fee !== undefined ? delivery_fee : 150,
+            delivery_fee: delivery_fee !== undefined ? delivery_fee : 100,
             free_delivery_threshold: free_delivery_threshold !== undefined ? free_delivery_threshold : 3000,
             delivery_enabled: delivery_enabled !== undefined ? delivery_enabled : true
           },
@@ -422,6 +422,397 @@ router.post('/delivery-settings', requireAdmin, [
     res.status(500).json({ 
       success: false, 
       message: 'Failed to update delivery settings' 
+    });
+  }
+});
+
+// ==================== DELIVERY ZONES MANAGEMENT ====================
+
+// Get all delivery zones (Admin)
+router.get('/delivery-zones', requireAdmin, async (req, res) => {
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
+
+    const zones = await db.collection('delivery_zones')
+      .find({})
+      .sort({ name: 1 })
+      .toArray();
+    
+    const settings = await db.collection('settings').findOne({ key: 'delivery' });
+    
+    res.json({
+      success: true,
+      zones: zones,
+      settings: settings?.value || { 
+        default_fee: 100, 
+        free_threshold: 3000, 
+        enabled: true 
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching delivery zones:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch delivery zones' 
+    });
+  }
+});
+
+// Get delivery zones for public (no auth)
+router.get('/public/delivery-zones', async (req, res) => {
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.json({
+        success: true,
+        zones: [],
+        settings: { default_fee: 100, free_threshold: 3000, enabled: true }
+      });
+    }
+
+    const zones = await db.collection('delivery_zones')
+      .find({})
+      .sort({ name: 1 })
+      .toArray();
+    
+    const settings = await db.collection('settings').findOne({ key: 'delivery' });
+    
+    res.json({
+      success: true,
+      zones: zones,
+      settings: settings?.value || { 
+        default_fee: 100, 
+        free_threshold: 3000, 
+        enabled: true 
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching delivery zones:', err);
+    res.json({
+      success: true,
+      zones: [],
+      settings: { default_fee: 100, free_threshold: 3000, enabled: true }
+    });
+  }
+});
+
+// Save delivery zones (Admin)
+router.post('/delivery-zones', requireAdmin, [
+  body('zones').isArray().withMessage('Zones must be an array'),
+  body('settings').optional().isObject().withMessage('Settings must be an object')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation failed',
+      errors: errors.array()
+    });
+  }
+
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
+
+    const { zones, settings } = req.body;
+
+    // Clear existing zones
+    await db.collection('delivery_zones').deleteMany({});
+    
+    // Insert new zones
+    if (zones && zones.length > 0) {
+      const zonesToInsert = zones.map(z => ({
+        name: z.name.trim(),
+        fee: parseInt(z.fee) || 100,
+        created_at: new Date(),
+        updated_at: new Date()
+      }));
+      
+      await db.collection('delivery_zones').insertMany(zonesToInsert);
+    }
+
+    // Update delivery settings if provided
+    if (settings) {
+      const { default_fee, free_threshold, enabled } = settings;
+      const deliverySettings = {
+        default_fee: default_fee !== undefined ? default_fee : 100,
+        free_threshold: free_threshold !== undefined ? free_threshold : 3000,
+        enabled: enabled !== undefined ? enabled : true,
+        updated_at: new Date()
+      };
+      
+      await db.collection('settings').updateOne(
+        { key: 'delivery' },
+        { $set: { value: deliverySettings } },
+        { upsert: true }
+      );
+    }
+    
+    res.json({ 
+      success: true, 
+      message: 'Delivery zones saved successfully' 
+    });
+  } catch (err) {
+    console.error('Error saving delivery zones:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to save delivery zones' 
+    });
+  }
+});
+
+// Calculate delivery fee for an area (public)
+router.post('/delivery-fee', async (req, res) => {
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
+
+    const { area, subtotal } = req.body;
+    
+    if (!area) {
+      return res.status(400).json({
+        success: false,
+        message: 'Area required'
+      });
+    }
+
+    // Get delivery settings
+    const settings = await db.collection('settings').findOne({ key: 'delivery' });
+    const defaultFee = settings?.value?.default_fee || 100;
+    const freeThreshold = settings?.value?.free_threshold || 3000;
+    const enabled = settings?.value?.enabled !== false;
+    
+    if (!enabled) {
+      return res.json({
+        success: true,
+        fee: 0,
+        isFree: true,
+        reason: 'Delivery is currently disabled'
+      });
+    }
+    
+    // Check if delivery is free based on subtotal
+    if (subtotal && subtotal >= freeThreshold) {
+      return res.json({
+        success: true,
+        fee: 0,
+        isFree: true,
+        reason: 'Free delivery (order over KES ' + freeThreshold.toLocaleString() + ')'
+      });
+    }
+    
+    // Find zone fee (case-insensitive)
+    const zone = await db.collection('delivery_zones').findOne({
+      name: { $regex: new RegExp('^' + area.trim() + '$', 'i') }
+    });
+    
+    const fee = zone?.fee || defaultFee;
+    
+    res.json({
+      success: true,
+      fee: fee,
+      isFree: false,
+      zone: zone?.name || 'Default',
+      reason: 'Delivery fee for ' + area
+    });
+  } catch (err) {
+    console.error('Error calculating delivery fee:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to calculate delivery fee' 
+    });
+  }
+});
+
+// ==================== CATEGORY MANAGEMENT ====================
+
+// Get all categories (built-in + custom)
+router.get('/categories', requireAdmin, async (req, res) => {
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
+
+    // Get custom categories from database
+    const customCategories = await db.collection('categories')
+      .find({})
+      .sort({ label: 1 })
+      .toArray();
+    
+    // Build response
+    const allCategories = [];
+    
+    // Add built-in categories
+    Object.keys(CATEGORIES).forEach(key => {
+      allCategories.push({
+        key: key,
+        label: CATEGORIES[key],
+        color: CATEGORY_COLORS[key] || '#6B7280',
+        builtin: true
+      });
+    });
+    
+    // Add custom categories
+    customCategories.forEach(c => {
+      allCategories.push({
+        key: c.key,
+        label: c.label,
+        color: c.color || '#6B7280',
+        builtin: false,
+        _id: c._id
+      });
+    });
+    
+    res.json({ 
+      success: true, 
+      categories: allCategories 
+    });
+  } catch (err) {
+    console.error('Error fetching categories:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch categories' 
+    });
+  }
+});
+
+// Add custom category
+router.post('/categories', requireAdmin, [
+  body('key').notEmpty().withMessage('Category key required')
+    .matches(/^[a-z0-9_]+$/).withMessage('Key must be lowercase, alphanumeric with underscores'),
+  body('label').notEmpty().withMessage('Category label required'),
+  body('color').optional().isString().withMessage('Color must be a string')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation failed',
+      errors: errors.array()
+    });
+  }
+
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
+
+    const { key, label, color } = req.body;
+    const categoryKey = key.toLowerCase();
+
+    // Check if category already exists in constants
+    if (CATEGORIES[categoryKey]) {
+      return res.status(400).json({
+        success: false,
+        message: 'Category "' + label + '" already exists in system'
+      });
+    }
+
+    // Check if category already exists in database
+    const existing = await db.collection('categories').findOne({ key: categoryKey });
+    if (existing) {
+      return res.status(400).json({
+        success: false,
+        message: 'Category key "' + categoryKey + '" already exists'
+      });
+    }
+
+    const newCategory = {
+      key: categoryKey,
+      label: label.trim(),
+      color: color || '#6B7280',
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+
+    const result = await db.collection('categories').insertOne(newCategory);
+    
+    res.json({
+      success: true,
+      category: { _id: result.insertedId, ...newCategory },
+      message: 'Category "' + label + '" added successfully'
+    });
+  } catch (err) {
+    console.error('Error adding category:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to add category' 
+    });
+  }
+});
+
+// Delete custom category
+router.delete('/categories/:key', requireAdmin, async (req, res) => {
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
+
+    const { key } = req.params;
+    
+    // Prevent deleting built-in categories
+    if (CATEGORIES[key]) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot delete built-in category "' + CATEGORIES[key] + '"'
+      });
+    }
+    
+    // Check if category is being used by any products
+    const productsCount = await db.collection('products').countDocuments({ category: key });
+    if (productsCount > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot delete category "' + key + '" — it is used by ' + productsCount + ' product(s)'
+      });
+    }
+    
+    const result = await db.collection('categories').deleteOne({ key });
+    
+    if (result.deletedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Category not found'
+      });
+    }
+    
+    res.json({ 
+      success: true, 
+      message: 'Category deleted successfully' 
+    });
+  } catch (err) {
+    console.error('Error deleting category:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to delete category' 
     });
   }
 });
@@ -626,7 +1017,7 @@ router.get('/export-sheet', requireAdmin, async (req, res) => {
           row += `,${v.size},${v.price},${v.discount || 0}`;
         });
         for (let i = p.variants.length; i < maxVariants; i++) {
-          row += ',,'; 
+          row += ',,';
         }
       }
       csv += row + '\n';
