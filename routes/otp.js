@@ -5,7 +5,7 @@ const { getDB } = require('../config/database');
 const { otpLimiter } = require('../config/rateLimits');
 const { sendOTPEmail } = require('../utils/email');
 const { isValidEmail } = require('../config/constants');
-const { generateToken } = require('../utils/passport');
+const { generateToken } = require('../config/passport'); // ✅ FIXED
 const { generateOTP, isOTPExpired } = require('../utils/otp');
 
 const router = express.Router();
@@ -34,7 +34,6 @@ router.post('/send-email-otp', otpLimiter, [
   }
 
   try {
-    // Check if email already has an OTP (prevent spam)
     const existing = await db.collection('otps').findOne({ email });
     if (existing) {
       const age = (Date.now() - new Date(existing.created_at).getTime()) / 1000 / 60;
@@ -46,23 +45,20 @@ router.post('/send-email-otp', otpLimiter, [
       }
     }
 
-    // ✅ BACKEND GENERATES THE OTP
     const otp = generateOTP(6);
 
-    // Store OTP with expiry
     await db.collection('otps').updateOne(
       { email },
       {
         $set: {
           otp,
           created_at: new Date(),
-          expires_at: new Date(Date.now() + 10 * 60 * 1000) // 10 minutes
+          expires_at: new Date(Date.now() + 10 * 60 * 1000)
         }
       },
       { upsert: true }
     );
 
-    // Send email
     const sent = await sendOTPEmail(email, otp);
 
     if (sent) {
@@ -112,10 +108,8 @@ router.post('/verify-otp', [
   }
 
   try {
-    // Get stored OTP
     const stored = await db.collection('otps').findOne({ email });
 
-    // Check if OTP exists
     if (!stored) {
       return res.status(401).json({
         success: false,
@@ -123,7 +117,6 @@ router.post('/verify-otp', [
       });
     }
 
-    // Check if OTP expired (using helper)
     if (isOTPExpired(stored.created_at, 10)) {
       await db.collection('otps').deleteOne({ email });
       return res.status(401).json({
@@ -132,9 +125,7 @@ router.post('/verify-otp', [
       });
     }
 
-    // Verify OTP with attempt tracking
     if (stored.otp !== otp) {
-      // Track failed attempts
       const attempts = (stored.attempts || 0) + 1;
       if (attempts >= 5) {
         await db.collection('otps').deleteOne({ email });
@@ -153,15 +144,12 @@ router.post('/verify-otp', [
       });
     }
 
-    // Delete used OTP
     await db.collection('otps').deleteOne({ email });
 
-    // ---------- AUTO-CREATE CUSTOMER ----------
     let customer = await db.collection('customers').findOne({
       email: email.toLowerCase()
     });
 
-    // If customer doesn't exist, create one
     if (!customer) {
       const newCustomer = {
         email: email.toLowerCase(),
@@ -177,7 +165,6 @@ router.post('/verify-otp', [
       customer = { _id: result.insertedId, ...newCustomer };
       console.log(`✅ New customer created: ${email}`);
     } else {
-      // Update existing customer if name/phone provided
       const updates = {};
       if (name) updates.name = name;
       if (phone) updates.phone = phone;
@@ -191,10 +178,8 @@ router.post('/verify-otp', [
       }
     }
 
-    // ---------- GENERATE JWT ----------
     const token = generateToken(customer._id.toString(), 'customer');
 
-    // Return token + customer data
     res.json({
       success: true,
       message: 'Verified successfully',
@@ -233,7 +218,7 @@ router.post('/refresh-token', [
   const { token } = req.body;
 
   try {
-    const { verifyToken, generateToken } = require('../utils/passport');
+    const { verifyToken, generateToken } = require('../config/passport');
     const decoded = verifyToken(token);
 
     if (!decoded) {
@@ -243,7 +228,6 @@ router.post('/refresh-token', [
       });
     }
 
-    // Check if customer still exists
     const db = getDB();
     if (!db) {
       return res.status(503).json({
@@ -263,7 +247,6 @@ router.post('/refresh-token', [
       });
     }
 
-    // Generate new token
     const newToken = generateToken(customer._id.toString(), 'customer');
 
     res.json({
