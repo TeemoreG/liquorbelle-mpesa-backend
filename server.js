@@ -125,6 +125,9 @@ app.set('statsCache', statsCache);
 // Auth routes (PIN-based, email OTP)
 app.use('/api/auth', require('./routes/auth'));
 
+// Admin auth routes - ADDED THIS
+app.use('/api/admin', require('./routes/admin-auth'));
+
 // Product routes
 app.use('/api/db/products', require('./routes/products'));
 
