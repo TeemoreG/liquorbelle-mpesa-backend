@@ -88,15 +88,33 @@ app.use(compression());
 
 // ==================== RATE LIMITING ====================
 app.use('/api/', generalLimiter);
+
+// OTP rate limiter (email only)
 app.use('/api/send-email-otp', otpLimiter);
+app.use('/api/auth/send-email-otp', otpLimiter);
+
+// Auth rate limiters
+app.use('/api/auth/register', loginLimiter);
+app.use('/api/auth/login', loginLimiter);
+app.use('/api/auth/login-phone', loginLimiter);
+app.use('/api/auth/forgot-pin', loginLimiter);
+app.use('/api/auth/reset-pin', loginLimiter);
+
+// Payment & order rate limiters
 app.use('/api/stkpush', stkLimiter);
 app.use('/api/orders/pod', orderCreateLimiter);
+app.use('/api/payments/stkpush', stkLimiter);
+
+// Admin rate limiters
 app.use('/api/db/', adminLimiter);
 app.use('/api/admin/', adminLimiter);
+
+// Geocode rate limiter
 app.use('/api/geocode/', geocodeLimiter);
+
+// Admin/Cashier login rate limiters
 app.use('/api/auth/admin/login', loginLimiter);
 app.use('/api/auth/cashier/login', loginLimiter);
-app.use('/api/auth/customers/login', loginLimiter);
 
 // ==================== EXPOSE CACHE ====================
 app.set('orderCache', orderCache);
@@ -104,17 +122,39 @@ app.set('productCache', productCache);
 app.set('statsCache', statsCache);
 
 // ==================== ROUTES ====================
+// Auth routes (PIN-based, email OTP)
 app.use('/api/auth', require('./routes/auth'));
+
+// Product routes
 app.use('/api/db/products', require('./routes/products'));
+
+// Order routes
 app.use('/api/db/orders', require('./routes/orders'));
 app.use('/api/orders', require('./routes/orders'));
+
+// Payment routes (M-PESA)
 app.use('/api', require('./routes/payments'));
+app.use('/api/payments', require('./routes/payments'));
+
+// Admin routes
 app.use('/api/admin', require('./routes/admin'));
+
+// Customer routes (profile, favorites, orders)
 app.use('/api/customers', require('./routes/customers'));
+
+// OTP routes (email only)
 app.use('/api', require('./routes/otp'));
+
+// Geocode routes
 app.use('/api/geocode', require('./routes/geocode'));
+
+// Delivery routes
 app.use('/api', require('./routes/delivery'));
+
+// Categories routes
 app.use('/api/categories', require('./routes/categories'));
+
+// Order tracking routes
 app.use('/api/orders/track', require('./routes/order-tracking'));
 
 // ==================== HEALTH CHECK ====================
@@ -164,28 +204,47 @@ async function startServer() {
       statsCache.del('stats_monthly');
       statsCache.del('legacy_stats');
       statsCache.del('category_stats');
-      console.log('Stats cache cleared (daily refresh)');
+      console.log('✅ Stats cache cleared (daily refresh)');
     }, 24 * 60 * 60 * 1000);
+
+    // Auto-clear OTPs every hour
+    setInterval(async () => {
+      try {
+        const db = getDB();
+        if (db) {
+          const result = await db.collection('otps').deleteMany({
+            created_at: { $lt: new Date(Date.now() - 60 * 60 * 1000) } // 1 hour old
+          });
+          if (result.deletedCount > 0) {
+            console.log(`✅ Cleared ${result.deletedCount} expired OTPs`);
+          }
+        }
+      } catch (err) {
+        // Silently fail
+      }
+    }, 60 * 60 * 1000);
 
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`
 ╔═══════════════════════════════════════════════════════╗
 ║                                                       ║
-║   LIQUORBELLE BACKEND SERVER                         ║
+║   🍾 LIQUORBELLE BACKEND SERVER                     ║
 ║                                                       ║
 ║   Port: ${PORT}                                       ║
 ║   Database: Connected                                ║
 ║   Environment: ${process.env.NODE_ENV || 'development'} ║
 ║                                                       ║
-║   Email: ${process.env.BREVO_API_KEY ? 'Enabled' : 'Disabled'}   ║
-║   M-PESA: ${process.env.CONSUMER_KEY ? 'Enabled' : 'Disabled'}   ║
-║   Google Sheets: ${process.env.GOOGLE_SHEETS_API_KEY ? 'Enabled' : 'Disabled'} ║
+║   Email: ${process.env.BREVO_API_KEY ? '✅ Enabled' : '❌ Disabled'}   ║
+║   M-PESA: ${process.env.CONSUMER_KEY ? '✅ Enabled' : '❌ Disabled'}   ║
+║   Google Sheets: ${process.env.GOOGLE_SHEETS_API_KEY ? '✅ Enabled' : '❌ Disabled'} ║
+║                                                       ║
+║   Auth: PIN-based with Email OTP                     ║
 ║                                                       ║
 ╚═══════════════════════════════════════════════════════╝
       `);
     });
   } catch (err) {
-    console.error('Failed to start server:', err);
+    console.error('❌ Failed to start server:', err);
     process.exit(1);
   }
 }
@@ -194,23 +253,23 @@ startServer();
 
 // ==================== GRACEFUL SHUTDOWN ====================
 process.on('SIGTERM', async () => {
-  console.log('SIGTERM received, closing server...');
+  console.log('🛑 SIGTERM received, closing server...');
   await closeDB();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
-  console.log('SIGINT received, closing server...');
+  console.log('🛑 SIGINT received, closing server...');
   await closeDB();
   process.exit(0);
 });
 
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
+  console.error('❌ Uncaught Exception:', err);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 module.exports = app;

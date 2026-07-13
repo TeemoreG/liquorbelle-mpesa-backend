@@ -1,5 +1,6 @@
 const express = require('express');
 const axios = require('axios');
+const { body, query, validationResult } = require('express-validator');
 const { ObjectId } = require('mongodb');
 const { getDB } = require('../config/database');
 const { requireAdmin, requireAdminOrCashier } = require('../middleware/auth');
@@ -9,7 +10,7 @@ const {
   clearProductCache, 
   clearStatsCache 
 } = require('../utils/cache');
-const { CATEGORIES, CATEGORY_COLORS } = require('../config/constants');
+const { CATEGORIES, CATEGORY_COLORS, isValidEmail } = require('../config/constants');
 
 const router = express.Router();
 
@@ -17,26 +18,45 @@ const router = express.Router();
 router.get('/category-stats', requireAdmin, async (req, res) => {
   try {
     const db = getDB();
-    if (!db) return res.status(503).json({ success: false });
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
 
     const cached = statsCache.get('category_stats');
     if (cached) {
-      return res.json({ success: true, stats: cached, fromCache: true });
+      return res.json({ 
+        success: true, 
+        stats: cached, 
+        fromCache: true 
+      });
     }
 
     const products = await db.collection('products').find({}).toArray();
     const stats = {};
 
+    // Initialize all categories
     Object.keys(CATEGORIES).forEach(cat => {
-      stats[cat] = { count: 0, label: CATEGORIES[cat], color: CATEGORY_COLORS[cat] };
+      stats[cat] = { 
+        count: 0, 
+        label: CATEGORIES[cat], 
+        color: CATEGORY_COLORS[cat] || '#6B7280' 
+      };
     });
 
+    // Count products per category
     products.forEach(product => {
       const cat = product.category || 'uncategorized';
       if (stats[cat]) {
         stats[cat].count++;
       } else {
-        stats[cat] = { count: 1, label: cat, color: '#6B7280' };
+        stats[cat] = { 
+          count: 1, 
+          label: cat, 
+          color: '#6B7280' 
+        };
       }
     });
 
@@ -44,13 +64,18 @@ router.get('/category-stats', requireAdmin, async (req, res) => {
     res.json({ success: true, stats });
   } catch (err) {
     console.error('Error fetching category stats:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch category stats' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch category stats' 
+    });
   }
 });
 
 // ==================== GENERATE REPORT ====================
 async function generateReport(period) {
   const db = getDB();
+  if (!db) throw new Error('Database not connected');
+
   const now = new Date();
   let startDate;
 
@@ -72,7 +97,7 @@ async function generateReport(period) {
       startDate.setHours(0, 0, 0, 0);
   }
 
-  const [totalOrders, revenueResult, deliveredResult] = await Promise.all([
+  const [totalOrders, revenueResult, deliveredResult, pendingResult, paidResult] = await Promise.all([
     db.collection('orders').countDocuments({ created_at: { $gte: startDate } }),
     db.collection('orders').aggregate([
       { $match: { created_at: { $gte: startDate }, status: 'delivered' } },
@@ -80,9 +105,21 @@ async function generateReport(period) {
     ]).toArray(),
     db.collection('orders').aggregate([
       { $match: { created_at: { $gte: startDate }, status: 'delivered' } },
-      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$created_at' } }, count: { $sum: 1 }, revenue: { $sum: '$total' } } },
+      { $group: { 
+        _id: { $dateToString: { format: '%Y-%m-%d', date: '$created_at' } }, 
+        count: { $sum: 1 }, 
+        revenue: { $sum: '$total' } 
+      } },
       { $sort: { _id: 1 } }
-    ]).toArray()
+    ]).toArray(),
+    db.collection('orders').countDocuments({ 
+      created_at: { $gte: startDate }, 
+      status: 'pending' 
+    }),
+    db.collection('orders').countDocuments({ 
+      created_at: { $gte: startDate }, 
+      status: 'paid' 
+    })
   ]);
 
   return {
@@ -91,20 +128,77 @@ async function generateReport(period) {
     endDate: now,
     totalOrders,
     totalRevenue: revenueResult[0]?.total || 0,
+    pendingOrders: pendingResult || 0,
+    paidOrders: paidResult || 0,
     deliveredCount: deliveredResult.reduce((sum, d) => sum + d.count, 0),
     breakdown: deliveredResult
   };
 }
 
-// ==================== DAILY REPORT ====================
+// ==================== REPORTS ====================
+router.get('/reports/:period', requireAdminOrCashier, [
+  query('period').optional().isIn(['daily', 'weekly', 'monthly'])
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation failed',
+      errors: errors.array()
+    });
+  }
+
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
+
+    const { period = 'daily' } = req.params;
+
+    const cacheKey = `stats_${period}`;
+    const cached = statsCache.get(cacheKey);
+    if (cached) {
+      return res.json({ 
+        success: true, 
+        report: cached, 
+        fromCache: true 
+      });
+    }
+
+    const report = await generateReport(period);
+    statsCache.set(cacheKey, report);
+    res.json({ success: true, report });
+  } catch (err) {
+    console.error(`Error generating ${req.params.period} report:`, err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to generate report' 
+    });
+  }
+});
+
+// ==================== DAILY REPORT (Legacy) ====================
 router.get('/reports/daily', requireAdminOrCashier, async (req, res) => {
   try {
     const db = getDB();
-    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
 
     const cached = statsCache.get('stats_daily');
     if (cached) {
-      return res.json({ success: true, report: cached, fromCache: true });
+      return res.json({ 
+        success: true, 
+        report: cached, 
+        fromCache: true 
+      });
     }
 
     const report = await generateReport('daily');
@@ -112,19 +206,31 @@ router.get('/reports/daily', requireAdminOrCashier, async (req, res) => {
     res.json({ success: true, report });
   } catch (err) {
     console.error('Error generating daily report:', err);
-    res.status(500).json({ success: false, message: 'Failed to generate report' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to generate report' 
+    });
   }
 });
 
-// ==================== WEEKLY REPORT ====================
+// ==================== WEEKLY REPORT (Legacy) ====================
 router.get('/reports/weekly', requireAdminOrCashier, async (req, res) => {
   try {
     const db = getDB();
-    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
 
     const cached = statsCache.get('stats_weekly');
     if (cached) {
-      return res.json({ success: true, report: cached, fromCache: true });
+      return res.json({ 
+        success: true, 
+        report: cached, 
+        fromCache: true 
+      });
     }
 
     const report = await generateReport('weekly');
@@ -132,19 +238,31 @@ router.get('/reports/weekly', requireAdminOrCashier, async (req, res) => {
     res.json({ success: true, report });
   } catch (err) {
     console.error('Error generating weekly report:', err);
-    res.status(500).json({ success: false, message: 'Failed to generate report' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to generate report' 
+    });
   }
 });
 
-// ==================== MONTHLY REPORT ====================
+// ==================== MONTHLY REPORT (Legacy) ====================
 router.get('/reports/monthly', requireAdminOrCashier, async (req, res) => {
   try {
     const db = getDB();
-    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
 
     const cached = statsCache.get('stats_monthly');
     if (cached) {
-      return res.json({ success: true, report: cached, fromCache: true });
+      return res.json({ 
+        success: true, 
+        report: cached, 
+        fromCache: true 
+      });
     }
 
     const report = await generateReport('monthly');
@@ -152,7 +270,10 @@ router.get('/reports/monthly', requireAdminOrCashier, async (req, res) => {
     res.json({ success: true, report });
   } catch (err) {
     console.error('Error generating monthly report:', err);
-    res.status(500).json({ success: false, message: 'Failed to generate report' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to generate report' 
+    });
   }
 });
 
@@ -160,17 +281,29 @@ router.get('/reports/monthly', requireAdminOrCashier, async (req, res) => {
 router.get('/stats', requireAdmin, async (req, res) => {
   try {
     const db = getDB();
-    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
 
     const cached = statsCache.get('legacy_stats');
     if (cached) {
-      return res.json({ success: true, stats: cached, fromCache: true });
+      return res.json({ 
+        success: true, 
+        stats: cached, 
+        fromCache: true 
+      });
     }
 
     const [totalOrders, totalProducts, revenueResult, pending, paid, delivered] = await Promise.all([
       db.collection('orders').countDocuments(),
       db.collection('products').countDocuments(),
-      db.collection('orders').aggregate([{ $match: { status: 'delivered' } }, { $group: { _id: null, total: { $sum: '$total' } } }]).toArray(),
+      db.collection('orders').aggregate([
+        { $match: { status: 'delivered' } }, 
+        { $group: { _id: null, total: { $sum: '$total' } } }
+      ]).toArray(),
       db.collection('orders').countDocuments({ status: 'pending' }),
       db.collection('orders').countDocuments({ status: 'paid' }),
       db.collection('orders').countDocuments({ status: 'delivered' })
@@ -189,7 +322,10 @@ router.get('/stats', requireAdmin, async (req, res) => {
     res.json({ success: true, stats });
   } catch (err) {
     console.error('Error fetching stats:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch stats' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch stats' 
+    });
   }
 });
 
@@ -200,7 +336,11 @@ router.get('/delivery-settings', requireAdmin, async (req, res) => {
     if (!db) {
       return res.json({ 
         success: true, 
-        settings: { delivery_fee: 150, free_delivery_threshold: 3000, delivery_enabled: true } 
+        settings: { 
+          delivery_fee: 150, 
+          free_delivery_threshold: 3000, 
+          delivery_enabled: true 
+        } 
       });
     }
 
@@ -208,21 +348,47 @@ router.get('/delivery-settings', requireAdmin, async (req, res) => {
     
     res.json({ 
       success: true, 
-      settings: settings?.value || { delivery_fee: 150, free_delivery_threshold: 3000, delivery_enabled: true } 
+      settings: settings?.value || { 
+        delivery_fee: 150, 
+        free_delivery_threshold: 3000, 
+        delivery_enabled: true 
+      } 
     });
   } catch (err) {
     console.error('Error fetching delivery settings:', err);
     res.json({ 
       success: true, 
-      settings: { delivery_fee: 150, free_delivery_threshold: 3000, delivery_enabled: true } 
+      settings: { 
+        delivery_fee: 150, 
+        free_delivery_threshold: 3000, 
+        delivery_enabled: true 
+      } 
     });
   }
 });
 
-router.post('/delivery-settings', requireAdmin, async (req, res) => {
+router.post('/delivery-settings', requireAdmin, [
+  body('delivery_fee').optional().isNumeric().withMessage('Delivery fee must be a number'),
+  body('free_delivery_threshold').optional().isNumeric().withMessage('Free delivery threshold must be a number'),
+  body('delivery_enabled').optional().isBoolean().withMessage('Delivery enabled must be a boolean')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation failed',
+      errors: errors.array()
+    });
+  }
+
   try {
     const db = getDB();
-    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
 
     const { delivery_fee, free_delivery_threshold, delivery_enabled } = req.body;
 
@@ -231,9 +397,9 @@ router.post('/delivery-settings', requireAdmin, async (req, res) => {
       {
         $set: {
           value: {
-            delivery_fee: delivery_fee || 0,
-            free_delivery_threshold: free_delivery_threshold || 0,
-            delivery_enabled: delivery_enabled !== false
+            delivery_fee: delivery_fee !== undefined ? delivery_fee : 150,
+            free_delivery_threshold: free_delivery_threshold !== undefined ? free_delivery_threshold : 3000,
+            delivery_enabled: delivery_enabled !== undefined ? delivery_enabled : true
           },
           updated_at: new Date()
         }
@@ -241,10 +407,22 @@ router.post('/delivery-settings', requireAdmin, async (req, res) => {
       { upsert: true }
     );
 
-    res.json({ success: true });
+    // Clear stats cache since delivery settings affect order totals
+    statsCache.del('stats_daily');
+    statsCache.del('stats_weekly');
+    statsCache.del('stats_monthly');
+    statsCache.del('legacy_stats');
+
+    res.json({ 
+      success: true, 
+      message: 'Delivery settings updated successfully' 
+    });
   } catch (err) {
     console.error('Error saving delivery settings:', err);
-    res.status(500).json({ success: false, message: 'Failed to update delivery settings' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to update delivery settings' 
+    });
   }
 });
 
@@ -252,10 +430,28 @@ router.post('/delivery-settings', requireAdmin, async (req, res) => {
 const GOOGLE_SHEETS_API_KEY = process.env.GOOGLE_SHEETS_API_KEY;
 const GOOGLE_SHEETS_SPREADSHEET_ID = process.env.GOOGLE_SHEETS_SPREADSHEET_ID;
 
-router.post('/import-sheet', requireAdmin, async (req, res) => {
+router.post('/import-sheet', requireAdmin, [
+  body('spreadsheetId').optional().isString().withMessage('Spreadsheet ID must be a string'),
+  body('range').optional().isString().withMessage('Range must be a string'),
+  body('sheetName').optional().isString().withMessage('Sheet name must be a string')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation failed',
+      errors: errors.array()
+    });
+  }
+
   try {
     const db = getDB();
-    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
 
     const { spreadsheetId, range, sheetName } = req.body;
     const sheetId = spreadsheetId || GOOGLE_SHEETS_SPREADSHEET_ID;
@@ -280,12 +476,15 @@ router.post('/import-sheet', requireAdmin, async (req, res) => {
 
     const rows = response.data.values;
     if (!rows || rows.length < 2) {
-      return res.status(400).json({ success: false, message: 'No data found in sheet' });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'No data found in sheet' 
+      });
     }
 
     const headers = rows[0].map(h => h.trim().toLowerCase());
     const imported = [];
-    const errors = [];
+    const errors_list = [];
 
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
@@ -309,6 +508,7 @@ router.post('/import-sheet', requireAdmin, async (req, res) => {
           variants: []
         };
 
+        // Parse variants (up to 10)
         for (let k = 1; k <= 10; k++) {
           const sizeKey = 'size' + k;
           const priceKey = 'price' + k;
@@ -323,6 +523,7 @@ router.post('/import-sheet', requireAdmin, async (req, res) => {
           }
         }
 
+        // If no variants found, try single variant
         if (product.variants.length === 0) {
           const size = obj.size || obj['Size'] || obj['SIZE'] || '750ml';
           const price = parseFloat(obj.price || obj['Price'] || obj['PRICE'] || 0);
@@ -333,12 +534,12 @@ router.post('/import-sheet', requireAdmin, async (req, res) => {
         }
 
         if (product.variants.length === 0) {
-          errors.push(`Row ${i+1}: No variants found for "${product.name}"`);
+          errors_list.push(`Row ${i+1}: No variants found for "${product.name}"`);
           continue;
         }
 
         if (!product.name) {
-          errors.push(`Row ${i+1}: Missing product name`);
+          errors_list.push(`Row ${i+1}: Missing product name`);
           continue;
         }
 
@@ -348,7 +549,7 @@ router.post('/import-sheet', requireAdmin, async (req, res) => {
         imported.push({ ...product, _id: result.insertedId });
 
       } catch (err) {
-        errors.push(`Row ${i+1}: ${err.message}`);
+        errors_list.push(`Row ${i+1}: ${err.message}`);
       }
     }
 
@@ -358,14 +559,17 @@ router.post('/import-sheet', requireAdmin, async (req, res) => {
     res.json({
       success: true,
       imported: imported.length,
-      errors: errors,
+      errors: errors_list,
       products: imported,
-      message: `Imported ${imported.length} products${errors.length > 0 ? `, ${errors.length} errors` : ''}`
+      message: `Imported ${imported.length} products${errors_list.length > 0 ? `, ${errors_list.length} errors` : ''}`
     });
 
   } catch (err) {
     console.error('Google Sheets import error:', err.message);
-    res.status(500).json({ success: false, message: 'Failed to import from Google Sheets: ' + err.message });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to import from Google Sheets: ' + err.message 
+    });
   }
 });
 
@@ -373,12 +577,28 @@ router.post('/import-sheet', requireAdmin, async (req, res) => {
 router.get('/export-sheet', requireAdmin, async (req, res) => {
   try {
     const db = getDB();
-    if (!db) return res.status(503).json({ success: false, message: 'Database connecting...' });
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
 
-    const products = await db.collection('products').find({}).sort({ created_at: -1 }).toArray();
+    const products = await db.collection('products')
+      .find({})
+      .sort({ created_at: -1 })
+      .toArray();
+
+    if (products.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No products found to export'
+      });
+    }
 
     let csv = 'Name,Category,Badge,Image,Description,Trending,New,Rating';
 
+    // Find max variants
     let maxVariants = 0;
     products.forEach(p => {
       if (p.variants && p.variants.length > maxVariants) {
@@ -413,17 +633,31 @@ router.get('/export-sheet', requireAdmin, async (req, res) => {
     });
 
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename=liquorbelle_products_export.csv');
+    res.setHeader('Content-Disposition', `attachment; filename=liquorbelle_export_${new Date().toISOString().slice(0,10)}.csv`);
     res.send(csv);
 
   } catch (err) {
     console.error('Export error:', err.message);
-    res.status(500).json({ success: false, message: 'Failed to export products' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to export products' 
+    });
   }
 });
 
 // ==================== SHEET INFO ====================
-router.get('/sheet-info', requireAdmin, async (req, res) => {
+router.get('/sheet-info', requireAdmin, [
+  query('spreadsheetId').optional().isString().withMessage('Spreadsheet ID must be a string')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation failed',
+      errors: errors.array()
+    });
+  }
+
   try {
     if (!GOOGLE_SHEETS_API_KEY) {
       return res.status(400).json({
@@ -453,7 +687,79 @@ router.get('/sheet-info', requireAdmin, async (req, res) => {
 
   } catch (err) {
     console.error('Sheet info error:', err.message);
-    res.status(500).json({ success: false, message: 'Failed to get sheet info: ' + err.message });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to get sheet info: ' + err.message 
+    });
+  }
+});
+
+// ==================== CLEAR CACHE (Admin) ====================
+router.post('/clear-cache', requireAdmin, async (req, res) => {
+  try {
+    clearProductCache();
+    clearStatsCache();
+    
+    // Also clear order cache
+    const { clearOrderCache } = require('../utils/cache');
+    clearOrderCache();
+
+    res.json({
+      success: true,
+      message: 'All caches cleared successfully'
+    });
+  } catch (err) {
+    console.error('Cache clear error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to clear cache'
+    });
+  }
+});
+
+// ==================== SYSTEM STATUS ====================
+router.get('/system-status', requireAdmin, async (req, res) => {
+  try {
+    const db = getDB();
+    const { getCacheStats } = require('../utils/cache');
+
+    // Database stats
+    const dbStats = db ? {
+      connected: true,
+      collections: await db.listCollections().toArray().then(cols => cols.map(c => c.name))
+    } : {
+      connected: false
+    };
+
+    // Cache stats
+    const cacheStats = getCacheStats();
+
+    // Environment
+    const envStatus = {
+      mpesa: !!process.env.CONSUMER_KEY,
+      email: !!process.env.BREVO_API_KEY,
+      sheets: !!process.env.GOOGLE_SHEETS_API_KEY,
+      maps: !!process.env.MAP_MAKER_API_KEY
+    };
+
+    res.json({
+      success: true,
+      status: {
+        database: dbStats,
+        cache: cacheStats,
+        environment: envStatus,
+        node_version: process.version,
+        uptime: process.uptime(),
+        memory_usage: process.memoryUsage(),
+        timestamp: new Date().toISOString()
+      }
+    });
+  } catch (err) {
+    console.error('System status error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get system status'
+    });
   }
 });
 
