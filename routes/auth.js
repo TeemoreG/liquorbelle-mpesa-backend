@@ -5,7 +5,7 @@ const { getDB } = require('../config/database');
 const { otpLimiter, loginLimiter } = require('../config/rateLimits');
 const { sendOTPEmail } = require('../utils/email');
 const { isValidEmail } = require('../config/constants');
-const { generateToken } = require('../utils/passport');
+const { generateToken } = require('../config/passport'); // ✅ FIXED: points to config folder
 const { generateOTP, isOTPExpired } = require('../utils/otp');
 const bcrypt = require('bcryptjs');
 
@@ -202,7 +202,7 @@ router.post('/register', [
     const newCustomer = {
       email: emailLower,
       name: name,
-      phone: formattedPhone,  // ✅ Phone saved here
+      phone: formattedPhone,
       pin: hashedPin,
       createdAt: new Date(),
       updatedAt: new Date(),
