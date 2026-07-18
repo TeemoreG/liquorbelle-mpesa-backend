@@ -759,4 +759,55 @@ router.post('/reset-pin', [
   }
 });
 
+// ==================== DEBUG: Check Database (SECURED) ====================
+router.get('/debug/db-check', async (req, res) => {
+  // Check for debug token - must match env variable
+  const debugToken = req.headers['x-debug-token'] || req.query.token;
+  const expectedToken = process.env.DEBUG_TOKEN;
+  
+  if (!expectedToken || debugToken !== expectedToken) {
+    return res.status(401).json({
+      success: false,
+      message: 'Unauthorized - Invalid or missing debug token'
+    });
+  }
+  
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({
+        success: false,
+        message: 'Database connecting...'
+      });
+    }
+
+    const count = await db.collection('customers').countDocuments();
+    const latest = await db.collection('customers')
+      .find()
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .toArray();
+
+    res.json({
+      success: true,
+      database: db.databaseName,
+      customerCount: count,
+      latest: latest.map(c => ({
+        id: c._id,
+        email: c.email,
+        name: c.name,
+        phone: c.phone,
+        createdAt: c.createdAt
+      })),
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Debug DB check error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 module.exports = router;
