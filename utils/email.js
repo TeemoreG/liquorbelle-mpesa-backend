@@ -1,14 +1,8 @@
-const axios = require('axios');
-const { escapeHtml } = require('../config/constants');
-
-const BREVO_API_KEY = process.env.BREVO_API_KEY;
-
 // ==================== EMAIL SERVICE (Brevo) ====================
-const axios = require('axios');
-const { generateOTPForEmail, formatOTPEmail } = require('./otp');
+const axios = require('axios'); // ← ONLY ONCE
 
 // ==================== CONFIG ====================
-const BREVO_API_KEY = process.env.BREVO_API_KEY;
+const BREVO_API_KEY = process.env.BREVO_API_KEY; // ← ONLY ONCE
 const SENDER_EMAIL = 'timblax0@gmail.com';
 const SENDER_NAME = 'LiquorBelle';
 
@@ -56,27 +50,91 @@ async function sendBrevoEmail(to, subject, htmlContent, params = {}) {
 }
 
 // ==================== SEND OTP EMAIL ====================
-async function sendOTPEmail(email, type = 'register', name = 'Customer') {
+async function sendOTPEmail(email, otp, type = 'verification', name = 'Customer') {
   if (!BREVO_API_KEY) {
     console.warn('⚠️ BREVO_API_KEY not configured - OTP email not sent');
     return { success: false, error: 'API key missing' };
   }
 
-  try {
-    const otpData = generateOTPForEmail(email, type);
-    const htmlContent = formatOTPEmail(otpData);
+  if (!email || !otp) {
+    console.error('❌ Missing email or OTP for OTP email');
+    return { success: false, error: 'Missing email or OTP' };
+  }
 
-    const result = await sendBrevoEmail(
-      email,
-      otpData.subject,
-      htmlContent,
-      { otp: otpData.otp, name, type: otpData.type }
+  const typeConfig = {
+    register: {
+      subject: '🔐 Verify Your LiquorBelle Account',
+      title: 'Account Verification',
+      color: '#22C55E',
+      message: 'Use the code below to verify your LiquorBelle account.'
+    },
+    reset: {
+      subject: '🔑 Reset Your LiquorBelle PIN',
+      title: 'PIN Reset Verification',
+      color: '#f0a500',
+      message: 'Use the code below to reset your LiquorBelle PIN.'
+    },
+    login: {
+      subject: '🔐 Login Verification Code',
+      title: 'Login Verification',
+      color: '#3498db',
+      message: 'Use the code below to verify your login attempt.'
+    },
+    verification: {
+      subject: 'Your LiquorBelle Verification Code',
+      title: 'Verification Code',
+      color: '#800000',
+      message: 'Use the code below to verify your request.'
+    }
+  };
+
+  const config = typeConfig[type] || typeConfig.verification;
+
+  try {
+    const html = `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>${config.subject}</title></head>
+<body style="margin:0;padding:0;background:#0a0a0f;font-family:Arial,sans-serif;">
+<div style="max-width:480px;margin:0 auto;padding:20px;">
+<div style="background:#111118;border-radius:24px;overflow:hidden;border:1px solid #1e1e2c;">
+  <div style="height:3px;background:linear-gradient(90deg,#22C55E,#f0a500,#22C55E);"></div>
+  <div style="background:#071a0f;text-align:center;padding:28px 24px;">
+    <img src="https://res.cloudinary.com/dvqjgbdhp/image/upload/v1780905905/WhatsApp_Image_2026-06-04_at_3.41.50_PM_saprsh.jpg" alt="LiquorBelle" style="width:56px;border-radius:14px;margin-bottom:10px;">
+    <div style="font-size:22px;font-weight:900;color:#fff;">Liquor<span style="color:#22C55E;">Belle</span></div>
+  </div>
+  <div style="padding:24px 28px;">
+    <h2 style="color:#fff;font-size:16px;">Hello ${escapeHtml(name)},</h2>
+    <p style="color:#888;font-size:14px;">${config.message}</p>
+    <div style="background:rgba(34,197,94,0.06);border:2px solid ${config.color};border-radius:12px;padding:20px;text-align:center;margin:18px 0;">
+      <div style="font-size:36px;font-weight:900;color:${config.color};letter-spacing:6px;font-family:monospace;">${otp}</div>
+    </div>
+    <p style="color:#666;font-size:11px;text-align:center;">⏰ This code expires in 10 minutes</p>
+  </div>
+  <div style="background:#0d0d14;text-align:center;padding:14px;color:#444;font-size:11px;">
+    If you didn't request this, please ignore this email.
+  </div>
+</div>
+</div>
+</body>
+</html>`;
+
+    await axios.post(
+      'https://api.brevo.com/v3/smtp/email',
+      {
+        sender: { name: SENDER_NAME, email: SENDER_EMAIL },
+        to: [{ email }],
+        subject: config.subject,
+        htmlContent: html
+      },
+      { headers: { 'api-key': BREVO_API_KEY, 'Content-Type': 'application/json' }, timeout: 10000 }
     );
 
-    return { ...result, otp: otpData.otp, expiresAt: otpData.expiresAt };
+    console.log(`✅ OTP email sent to ${email} (${type})`);
+    return { success: true };
+
   } catch (err) {
-    console.error('❌ OTP email error:', err.message);
-    return { success: false, error: err.message };
+    console.error('❌ OTP email error:', err.response?.data?.message || err.message);
+    return { success: false, error: err.response?.data?.message || err.message };
   }
 }
 
@@ -84,7 +142,7 @@ async function sendOTPEmail(email, type = 'register', name = 'Customer') {
 async function sendMpesaOrderReceivedEmail(orderData) {
   if (!BREVO_API_KEY) {
     console.warn('⚠️ BREVO_API_KEY not configured - email not sent');
-    return;
+    return { success: false, error: 'API key missing' };
   }
 
   try {
@@ -104,7 +162,7 @@ async function sendMpesaOrderReceivedEmail(orderData) {
 
     if (!customerEmail || !orderId) {
       console.error('❌ Missing required fields for order email:', { customerEmail, orderId });
-      return;
+      return { success: false, error: 'Missing required fields' };
     }
 
     const deliveryText = delivery === 0 ? 'FREE' : `KES ${delivery.toLocaleString()}`;
@@ -117,8 +175,6 @@ async function sendMpesaOrderReceivedEmail(orderData) {
     const headerBadge = isPod
       ? '📦 ORDER RECEIVED - RIDER ON THE WAY'
       : '✅ PAYMENT CONFIRMED - ORDER ON THE WAY';
-
-    const headerColor = isPod ? '#f0a500' : '#22C55E';
 
     const messageHtml = isPod ? `
       <p style="color:#888;font-size:14px;">Your order has been received! Our rider is on the way to deliver your drinks.</p>
@@ -171,8 +227,6 @@ async function sendMpesaOrderReceivedEmail(orderData) {
     .content { padding:20px 28px; }
     .content h2 { color:#fff; font-size:18px; }
     .content p { color:#888; font-size:14px; line-height:1.6; }
-    .content .highlight { color:#22C55E; }
-    .content .highlight-pod { color:#f0a500; }
     .table-wrap { padding:0 28px; }
     .table { width:100%; background:#16161f; border-radius:16px; overflow:hidden; }
     .table th { background:#1a1a26; padding:12px 16px; color:#f0a500; font-weight:800; text-align:left; }
@@ -244,15 +298,10 @@ async function sendMpesaOrderReceivedEmail(orderData) {
 </body>
 </html>`;
 
-    // Send the email
-    const result = await sendBrevoEmail(
-      customerEmail,
-      subject,
-      html
-    );
-
+    const result = await sendBrevoEmail(customerEmail, subject, html);
     console.log(`✅ Order email sent to ${customerEmail} (${isPod ? 'POD' : 'M-PESA'})`);
     return result;
+
   } catch (err) {
     console.error('❌ Order email error:', err.message);
     return { success: false, error: err.message };
@@ -261,17 +310,8 @@ async function sendMpesaOrderReceivedEmail(orderData) {
 
 // ==================== SEND PAYMENT CONFIRMATION EMAIL ====================
 async function sendPaymentConfirmationEmail(orderData) {
-  // Alias for order email
   return await sendMpesaOrderReceivedEmail(orderData);
 }
-
-// ==================== EXPORT ====================
-module.exports = {
-  sendBrevoEmail,
-  sendOTPEmail,
-  sendMpesaOrderReceivedEmail,
-  sendPaymentConfirmationEmail
-};
 
 // ==================== SEND ORDER DELIVERED EMAIL ====================
 async function sendOrderDeliveredEmail(orderData) {
@@ -307,7 +347,7 @@ async function sendOrderDeliveredEmail(orderData) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Order Delivered - ${orderId} - LiquorBelle</title>
+  <title>✅ Order Delivered - ${orderId} - LiquorBelle</title>
   <style>
     body { margin:0; padding:0; background:#0a0a0f; font-family: 'Inter', Arial, sans-serif; }
     .container { max-width:580px; margin:0 auto; padding:20px; }
@@ -396,20 +436,7 @@ async function sendOrderDeliveredEmail(orderData) {
 </body>
 </html>`;
 
-    const result = await axios.post(
-      'https://api.brevo.com/v3/smtp/email',
-      {
-        sender: { name: SENDER_NAME, email: SENDER_EMAIL },
-        to: [{ email: customerEmail }],
-        subject: `✅ Order Delivered - ${orderId} - LiquorBelle`,
-        htmlContent: html
-      },
-      {
-        headers: { 'api-key': BREVO_API_KEY, 'Content-Type': 'application/json' },
-        timeout: 10000
-      }
-    );
-
+    const result = await sendBrevoEmail(customerEmail, `✅ Order Delivered - ${orderId} - LiquorBelle`, html);
     console.log(`✅ Order delivered email sent to ${customerEmail}`);
     return { success: true };
 
@@ -418,3 +445,12 @@ async function sendOrderDeliveredEmail(orderData) {
     return { success: false, error: err.response?.data?.message || err.message };
   }
 }
+
+// ==================== EXPORT ====================
+module.exports = {
+  sendBrevoEmail,
+  sendOTPEmail,
+  sendMpesaOrderReceivedEmail,
+  sendPaymentConfirmationEmail,
+  sendOrderDeliveredEmail
+};
