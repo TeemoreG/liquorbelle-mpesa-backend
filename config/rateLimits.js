@@ -56,6 +56,18 @@ const loginLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// ===== ADD THIS =====
+const forgotPinLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 requests per 15 minutes
+  message: { 
+    success: false, 
+    message: 'Too many reset PIN attempts. Please try again later.' 
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 module.exports = {
   generalLimiter,
   otpLimiter,
@@ -63,5 +75,6 @@ module.exports = {
   orderCreateLimiter,
   adminLimiter,
   geocodeLimiter,
-  loginLimiter
+  loginLimiter,
+  forgotPinLimiter // ← ADD THIS
 };
