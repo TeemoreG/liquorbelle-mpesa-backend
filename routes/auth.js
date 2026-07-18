@@ -2,10 +2,10 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { ObjectId } = require('mongodb');
 const { getDB } = require('../config/database');
-const { otpLimiter, loginLimiter } = require('../config/rateLimits');
+const { otpLimiter, loginLimiter, forgotPinLimiter } = require('../config/rateLimits'); // ← ADDED forgotPinLimiter
 const { sendOTPEmail } = require('../utils/email');
 const { isValidEmail } = require('../config/constants');
-const { generateToken } = require('../config/passport'); // ✅ FIXED: points to config folder
+const { generateToken } = require('../config/passport');
 const { generateOTP, isOTPExpired } = require('../utils/otp');
 const bcrypt = require('bcryptjs');
 
@@ -15,13 +15,8 @@ const router = express.Router();
 function isValidPhone(phone) {
   if (!phone) return false;
   
-  // Remove all non-digit characters
   const cleaned = phone.replace(/\D/g, '');
   
-  // Check for valid Kenyan phone number formats:
-  // 0712345678 (10 digits starting with 07 or 01)
-  // 712345678 (9 digits starting with 7 or 1)
-  // 254712345678 (12 digits starting with 254)
   if (cleaned.length === 10 && (cleaned.startsWith('07') || cleaned.startsWith('01'))) {
     return true;
   }
@@ -35,41 +30,26 @@ function isValidPhone(phone) {
   return false;
 }
 
-/**
- * Format phone number to international format (254xxxxxxxxx)
- * @param {string} phone - Raw phone number
- * @returns {string} Formatted phone number
- */
 function formatPhone(phone) {
   if (!phone) return '';
   
-  // Remove all non-digit characters
   const cleaned = phone.replace(/\D/g, '');
   
-  // If already in international format (254...)
   if (cleaned.length === 12 && cleaned.startsWith('254')) {
     return cleaned;
   }
   
-  // If 10 digits starting with 07 or 01
   if (cleaned.length === 10 && (cleaned.startsWith('07') || cleaned.startsWith('01'))) {
     return '254' + cleaned.slice(1);
   }
   
-  // If 9 digits starting with 7 or 1
   if (cleaned.length === 9 && (cleaned.startsWith('7') || cleaned.startsWith('1'))) {
     return '254' + cleaned;
   }
   
-  // Return cleaned version as fallback
   return cleaned;
 }
 
-/**
- * Format phone for display (0712345678)
- * @param {string} phone - International format phone (254712345678)
- * @returns {string} Display format phone
- */
 function formatPhoneForDisplay(phone) {
   if (!phone) return '';
   
@@ -108,11 +88,9 @@ router.post('/send-email-otp', otpLimiter, [
   try {
     const existing = await db.collection('otps').findOne({ email });
     if (existing) {
-      // Check if OTP is still valid (not expired)
       const isExpired = new Date() > new Date(existing.expires_at);
       const age = (Date.now() - new Date(existing.created_at).getTime()) / 1000 / 60;
       
-      // Only apply cooldown if OTP is NOT expired
       if (!isExpired && age < 2) {
         return res.status(429).json({
           success: false,
@@ -272,164 +250,6 @@ router.post('/register', [
       token,
       customer: {
         id: result.insertedId,
-        email: customer.email,
-        name: customer.name,
-        phone: customer.phone,
-        createdAt: customer.createdAt
-      }
-    });
-
-  } catch (err) {
-    console.error('❌ Register error:', err);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to create account'
-    });
-  }
-}); 
-
-    // ---------- REGISTER ROUTE ----------
-router.post('/register', async (req, res) => {
-  try {
-    const { name, phone, email, pin, otp } = req.body;
-    const db = getDB();
-
-    if (!db) {
-      return res.status(503).json({
-        success: false,
-        message: 'Database connecting...'
-      });
-    }
-
-    // ---------- VALIDATE INPUT ----------
-    if (!name || !phone || !email || !pin || !otp) {
-      return res.status(400).json({
-        success: false,
-        message: 'All fields are required'
-      });
-    }
-
-    if (name.length < 2) {
-      return res.status(400).json({
-        success: false,
-        message: 'Name must be at least 2 characters'
-      });
-    }
-
-    if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
-      return res.status(400).json({
-        success: false,
-        message: 'PIN must be a 4-digit number'
-      });
-    }
-
-    if (otp.length !== 6 || !/^\d{6}$/.test(otp)) {
-      return res.status(400).json({
-        success: false,
-        message: 'OTP must be a 6-digit number'
-      });
-    }
-
-    // ---------- VALIDATE PHONE ----------
-    if (!isValidPhone(phone)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please enter a valid Kenyan phone number'
-      });
-    }
-
-    // ---------- VALIDATE EMAIL ----------
-    if (!email.includes('@')) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please enter a valid email address'
-      });
-    }
-
-    // ---------- VERIFY OTP ----------
-    const formattedPhone = formatPhone(phone);
-    const emailLower = email.toLowerCase();
-
-    // Check if OTP exists and is not expired
-    const otpRecord = await db.collection('otps').findOne({
-      email: emailLower,
-      otp: otp
-    });
-
-    if (!otpRecord) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid OTP. Please request a new one.'
-      });
-    }
-
-    // Check if OTP is expired
-    if (new Date() > new Date(otpRecord.expires_at)) {
-      // Delete expired OTP
-      await db.collection('otps').deleteOne({ _id: otpRecord._id });
-      return res.status(400).json({
-        success: false,
-        message: 'OTP has expired. Please request a new one.'
-      });
-    }
-
-    // ---------- CHECK IF CUSTOMER EXISTS ----------
-    // Check if email already exists
-    const existingEmail = await db.collection('customers').findOne({
-      email: emailLower
-    });
-
-    if (existingEmail) {
-      return res.status(409).json({
-        success: false,
-        message: 'Email already registered. Please login.'
-      });
-    }
-
-    // Check if phone already exists
-    const existingPhone = await db.collection('customers').findOne({
-      phone: formattedPhone
-    });
-
-    if (existingPhone) {
-      return res.status(409).json({
-        success: false,
-        message: 'Phone number already registered. Please login.'
-      });
-    }
-
-    // ---------- HASH PIN ----------
-    const hashedPin = await bcrypt.hash(pin, 10);
-
-    // ---------- CREATE CUSTOMER ----------
-    const newCustomer = {
-      email: emailLower,
-      name: name.trim(),
-      phone: formattedPhone,
-      pin: hashedPin,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      orderHistory: [],
-      favorites: []
-    };
-
-    const result = await db.collection('customers').insertOne(newCustomer);
-
-    // ---------- DELETE USED OTP ----------
-    await db.collection('otps').deleteOne({ _id: otpRecord._id });
-
-    const customer = { _id: result.insertedId, ...newCustomer };
-    console.log(`✅ New customer registered: ${email} | ${formattedPhone}`);
-
-    // ---------- GENERATE JWT ----------
-    const token = generateToken(customer._id.toString(), 'customer');
-
-    res.json({
-      success: true,
-      message: 'Account created successfully',
-      token,
-      customer: {
-        id: customer._id,
         email: customer.email,
         name: customer.name,
         phone: customer.phone,
@@ -657,7 +477,6 @@ router.post('/forgot-pin', forgotPinLimiter, [
   try {
     const emailLower = email.toLowerCase();
 
-    // ===== CHECK IF CUSTOMER EXISTS =====
     const customer = await db.collection('customers').findOne({
       email: emailLower
     });
@@ -669,7 +488,6 @@ router.post('/forgot-pin', forgotPinLimiter, [
       });
     }
 
-    // ===== CHECK FOR EXISTING VALID OTP =====
     const existingOtp = await db.collection('otps').findOne({
       email: emailLower,
       purpose: 'reset_pin'
@@ -679,7 +497,6 @@ router.post('/forgot-pin', forgotPinLimiter, [
       const isExpired = new Date() > new Date(existingOtp.expires_at);
       const age = (Date.now() - new Date(existingOtp.created_at).getTime()) / 1000 / 60;
 
-      // If OTP is still valid and less than 2 minutes old
       if (!isExpired && age < 2) {
         return res.status(429).json({
           success: false,
@@ -687,13 +504,11 @@ router.post('/forgot-pin', forgotPinLimiter, [
         });
       }
 
-      // If OTP is expired, delete it so we can create a new one
       if (isExpired) {
         await db.collection('otps').deleteOne({ _id: existingOtp._id });
       }
     }
 
-    // ===== GENERATE NEW OTP =====
     const otp = generateOTP(6);
 
     await db.collection('otps').updateOne(
@@ -709,11 +524,9 @@ router.post('/forgot-pin', forgotPinLimiter, [
       { upsert: true }
     );
 
-    // ===== SEND OTP EMAIL =====
     const sent = await sendOTPEmail(email, otp, 'reset', customer.name || 'Customer');
 
     if (!sent) {
-      // Delete OTP if email failed
       await db.collection('otps').deleteOne({ email: emailLower, otp });
       return res.status(500).json({
         success: false,
@@ -733,16 +546,6 @@ router.post('/forgot-pin', forgotPinLimiter, [
       success: false,
       message: 'Failed to send reset OTP'
     });
-  }
-});
-
-// ==================== RATE LIMITERS ====================
-const forgotPinLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // 5 requests per window
-  message: {
-    success: false,
-    message: 'Too many reset PIN attempts. Please try again later.'
   }
 });
 
@@ -775,7 +578,6 @@ router.post('/reset-pin', [
   }
 
   try {
-    // ===== VERIFY OTP =====
     const stored = await db.collection('otps').findOne({ 
       email: emailLower,
       purpose: 'reset_pin'
@@ -788,7 +590,6 @@ router.post('/reset-pin', [
       });
     }
 
-    // Check if OTP is expired
     if (isOTPExpired(stored.created_at, 10)) {
       await db.collection('otps').deleteOne({ email: emailLower });
       return res.status(401).json({
@@ -797,7 +598,6 @@ router.post('/reset-pin', [
       });
     }
 
-    // Check OTP match with attempt tracking
     if (stored.otp !== otp) {
       const attempts = (stored.attempts || 0) + 1;
       if (attempts >= 5) {
@@ -817,10 +617,8 @@ router.post('/reset-pin', [
       });
     }
 
-    // ===== DELETE USED OTP =====
     await db.collection('otps').deleteOne({ email: emailLower });
 
-    // ===== UPDATE PIN =====
     const hashedPin = await bcrypt.hash(newPin, 10);
 
     const result = await db.collection('customers').updateOne(
