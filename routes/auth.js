@@ -549,6 +549,79 @@ router.post('/forgot-pin', forgotPinLimiter, [
   }
 });
 
+// ==================== CHECK IF USER EXISTS ====================
+router.post('/check-user', [
+  body('name').optional().isLength({ min: 2, max: 100 }).withMessage('Name must be between 2 and 100 characters'),
+  body('email').optional().isEmail().withMessage('Valid email required'),
+  body('phone').optional().custom(value => isValidPhone(value)).withMessage('Invalid phone number')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation failed',
+      errors: errors.array()
+    });
+  }
+
+  const { name, email, phone } = req.body;
+  const db = getDB();
+  if (!db) {
+    return res.status(503).json({
+      success: false,
+      message: 'Database connecting...'
+    });
+  }
+
+  try {
+    // Build query with provided fields
+    const query = [];
+    if (email) query.push({ email: email.toLowerCase() });
+    if (phone) query.push({ phone: formatPhone(phone) });
+    if (name) query.push({ name: name.trim() });
+
+    if (query.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'At least one of name, email, or phone is required'
+      });
+    }
+
+    // Find any user matching any of the fields
+    const existingUser = await db.collection('customers').findOne({
+      $or: query
+    });
+
+    if (existingUser) {
+      const fields = [];
+      if (email && existingUser.email === email.toLowerCase()) fields.push('email');
+      if (phone && existingUser.phone === formatPhone(phone)) fields.push('phone');
+      if (name && existingUser.name === name.trim()) fields.push('name');
+      
+      return res.json({
+        success: true,
+        exists: true,
+        field: fields.length === 1 ? fields[0] : 'multiple',
+        fields: fields,
+        message: `User already exists with ${fields.join(', ')}`
+      });
+    }
+
+    res.json({
+      success: true,
+      exists: false,
+      message: 'User does not exist'
+    });
+
+  } catch (err) {
+    console.error('❌ Check user error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check user'
+    });
+  }
+});
+
 // ==================== RESET PIN — With OTP ====================
 router.post('/reset-pin', [
   body('email').isEmail().withMessage('Valid email required'),
