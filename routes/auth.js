@@ -549,6 +549,38 @@ router.post('/forgot-pin', forgotPinLimiter, [
   }
 });
 
+ // ==================== DEBUG: Check Database ====================
+router.get('/debug/db-check', async (req, res) => {
+  try {
+    const db = getDB();
+    const count = await db.collection('customers').countDocuments();
+    const latest = await db.collection('customers')
+      .find()
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .toArray();
+    
+    res.json({
+      success: true,
+      database: db.databaseName,
+      cluster: process.env.MONGODB_URI ? 'Using env URI' : 'No URI',
+      customerCount: count,
+      latest: latest.map(c => ({
+        id: c._id,
+        email: c.email,
+        name: c.name,
+        phone: c.phone,
+        createdAt: c.createdAt
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // ==================== CHECK IF USER EXISTS ====================
 router.post('/check-user', [
   body('name').optional().isLength({ min: 2, max: 100 }).withMessage('Name must be between 2 and 100 characters'),

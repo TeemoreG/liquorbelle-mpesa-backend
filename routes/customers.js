@@ -495,6 +495,61 @@ router.put('/me/favorites', requireCustomer, [
     });
   }
 });
+// ==================== DEBUG: Check Database ====================
+router.get('/debug/db-check', async (req, res) => {
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({
+        success: false,
+        message: 'Database connecting...'
+      });
+    }
+
+    // Get count
+    const count = await db.collection('customers').countDocuments();
+    
+    // Get latest users
+    const latest = await db.collection('customers')
+      .find()
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .toArray();
+    
+    // Get collection stats
+    const stats = await db.collection('customers').stats().catch(() => null);
+
+    res.json({
+      success: true,
+      database: db.databaseName,
+      cluster: process.env.MONGODB_URI ? 'Using env URI' : 'No URI',
+      customerCount: count,
+      latest: latest.map(c => ({
+        id: c._id,
+        email: c.email,
+        name: c.name,
+        phone: c.phone,
+        createdAt: c.createdAt
+      })),
+      stats: stats ? {
+        size: stats.size,
+        count: stats.count,
+        avgObjSize: stats.avgObjSize,
+        storageSize: stats.storageSize,
+        indexes: stats.indexes,
+        totalIndexSize: stats.totalIndexSize
+      } : null,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Debug DB check error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
 
 // ==================== GET FAVORITES ====================
 router.get('/me/favorites', requireCustomer, async (req, res) => {
