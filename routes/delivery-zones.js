@@ -1,6 +1,6 @@
 const express = require('express');
 const { getDB } = require('../config/database');
-const { authenticateAdmin } = require('../middleware/auth');
+const { requireAdmin } = require('../middleware/auth'); // ✅ Changed from authenticateAdmin to requireAdmin
 
 const router = express.Router();
 
@@ -30,7 +30,7 @@ router.get('/', async (req, res) => {
 });
 
 // ==================== UPDATE DELIVERY ZONES ====================
-router.put('/', authenticateAdmin, async (req, res) => {
+router.put('/', requireAdmin, async (req, res) => { // ✅ Changed from authenticateAdmin to requireAdmin
   const { zones } = req.body;
   const db = getDB();
   

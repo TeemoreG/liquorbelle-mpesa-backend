@@ -6,7 +6,7 @@ const { requireAdmin, requireAdminOrCashier, requireCustomer } = require('../mid
 const { orderCache, clearOrderCache } = require('../utils/cache');
 const { sendMpesaOrderReceivedEmail, sendOrderDeliveredEmail } = require('../utils/email');
 const { orderCreateLimiter } = require('../config/rateLimits');
-const { isValidEmail } = require('../config/constants');
+const { isValidEmail, DEFAULT_DELIVERY } = require('../config/constants');
 
 const router = express.Router();
 
@@ -23,6 +23,46 @@ function formatPhone(phone) {
     return '254' + cleaned.slice(1);
   }
   return cleaned;
+}
+
+// ==================== HELPER: Calculate Delivery Fee ====================
+async function calculateDeliveryFee(area, subtotal) {
+  try {
+    const db = getDB();
+    if (!db) {
+      return DEFAULT_DELIVERY.fee;
+    }
+
+    // Get delivery settings
+    const settings = await db.collection('settings').findOne({ key: 'delivery' });
+    const defaultFee = settings?.value?.default_fee || DEFAULT_DELIVERY.fee;
+    const freeThreshold = settings?.value?.free_threshold || DEFAULT_DELIVERY.freeThreshold;
+    const enabled = settings?.value?.enabled !== false;
+
+    if (!enabled) {
+      return 0;
+    }
+
+    // Check free delivery based on subtotal
+    if (subtotal && subtotal >= freeThreshold) {
+      return 0;
+    }
+
+    // If no area specified, return default fee
+    if (!area) {
+      return defaultFee;
+    }
+
+    // Find zone fee (case-insensitive)
+    const zone = await db.collection('delivery_zones').findOne({
+      name: { $regex: new RegExp('^' + area.trim() + '$', 'i') }
+    });
+
+    return zone?.fee || defaultFee;
+  } catch (err) {
+    console.error('Error calculating delivery fee:', err);
+    return DEFAULT_DELIVERY.fee;
+  }
 }
 
 // ==================== GET ALL ORDERS (Admin) ====================
@@ -325,7 +365,8 @@ router.post('/', requireAdminOrCashier, [
   body('phone').notEmpty().withMessage('Phone required'),
   body('address').notEmpty().withMessage('Address required'),
   body('total').isNumeric().withMessage('Total must be a number'),
-  body('items').isArray({ min: 1 }).withMessage('At least one item required')
+  body('items').isArray({ min: 1 }).withMessage('At least one item required'),
+  body('deliveryArea').optional().isString().withMessage('Delivery area must be a string')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -356,7 +397,8 @@ router.post('/', requireAdminOrCashier, [
       delivery, 
       total, 
       items, 
-      paymentMethod 
+      paymentMethod,
+      deliveryArea
     } = req.body;
 
     // Check if order number already exists
@@ -370,6 +412,12 @@ router.post('/', requireAdminOrCashier, [
       });
     }
 
+    // Calculate delivery fee using zone system if not provided
+    let finalDelivery = delivery;
+    if (finalDelivery === undefined || finalDelivery === null) {
+      finalDelivery = await calculateDeliveryFee(deliveryArea, subtotal || 0);
+    }
+
     const order = {
       order_number: orderNumber,
       customer_name: customerName,
@@ -378,10 +426,11 @@ router.post('/', requireAdminOrCashier, [
       address,
       notes: notes || '',
       subtotal: subtotal || 0,
-      delivery: delivery || 0,
-      total,
+      delivery: finalDelivery,
+      total: (subtotal || 0) + finalDelivery,
       payment_method: paymentMethod || 'M-PESA',
       status: 'pending',
+      delivery_area: deliveryArea || '',
       items: items.map(item => ({ 
         product_name: item.name || item.product_name, 
         ...item, 
@@ -421,7 +470,8 @@ router.post('/pod', orderCreateLimiter, [
   body('address').notEmpty().withMessage('Address required'),
   body('items').isArray({ min: 1 }).withMessage('At least one item required'),
   body('total').isNumeric().withMessage('Total must be a number'),
-  body('customerName').optional().isString().isLength({ min: 2, max: 100 })
+  body('customerName').optional().isString().isLength({ min: 2, max: 100 }),
+  body('deliveryArea').optional().isString().withMessage('Delivery area must be a string')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -451,7 +501,8 @@ router.post('/pod', orderCreateLimiter, [
       subtotal,
       delivery,
       total,
-      items
+      items,
+      deliveryArea
     } = req.body;
 
     const finalOrderNumber = orderNumber && orderNumber.trim() !== ''
@@ -469,6 +520,12 @@ router.post('/pod', orderCreateLimiter, [
       });
     }
 
+    // Calculate delivery fee using zone system if not provided
+    let finalDelivery = delivery;
+    if (finalDelivery === undefined || finalDelivery === null) {
+      finalDelivery = await calculateDeliveryFee(deliveryArea, subtotal || 0);
+    }
+
     const order = {
       order_number: finalOrderNumber,
       customer_name: customerName,
@@ -477,10 +534,11 @@ router.post('/pod', orderCreateLimiter, [
       address,
       notes: notes || '',
       subtotal: subtotal || 0,
-      delivery: delivery || 0,
-      total,
+      delivery: finalDelivery,
+      total: (subtotal || 0) + finalDelivery,
       payment_method: 'POD',
       status: 'pending',
+      delivery_area: deliveryArea || '',
       items: items.map(item => ({
         product_name: item.name || item.product_name,
         ...item,
@@ -825,6 +883,38 @@ router.get('/customer/me', requireCustomer, async (req, res) => {
     res.status(500).json({ 
       success: false, 
       message: 'Failed to fetch orders' 
+    });
+  }
+});
+
+// ==================== GET DELIVERY FEE FOR AREA (Public) ====================
+router.post('/delivery-fee', [
+  body('area').notEmpty().withMessage('Area is required'),
+  body('subtotal').optional().isNumeric().withMessage('Subtotal must be a number')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation failed',
+      errors: errors.array()
+    });
+  }
+
+  try {
+    const { area, subtotal = 0 } = req.body;
+    const fee = await calculateDeliveryFee(area, subtotal);
+    
+    res.json({
+      success: true,
+      fee: fee,
+      isFree: fee === 0 && subtotal > 0
+    });
+  } catch (err) {
+    console.error('Error getting delivery fee:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to calculate delivery fee'
     });
   }
 });

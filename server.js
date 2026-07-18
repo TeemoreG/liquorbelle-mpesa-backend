@@ -39,51 +39,64 @@ app.use(helmet({
   },
 }));
 
-// ==================== CORS ====================
+// ==================== CORS - FIXED ====================
+const allowedOrigins = [
+  'https://teemoreg.github.io',
+  'https://liquorbelle-mpesa-backend.onrender.com',
+  'https://liquorbelle.com',
+  'https://www.liquorbelle.com',
+  'http://localhost:3000',
+  'http://localhost:5500',
+  'http://127.0.0.1:5500',
+  'http://localhost:8000',
+  'http://127.0.0.1:8000',
+  'http://localhost:8080',
+  'http://127.0.0.1:8080',
+  'http://localhost:5000',
+  'http://127.0.0.1:5000'
+];
+
 app.use(cors({
   origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl)
+    // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
-    const allowedOrigins = [
-      'https://teemoreg.github.io',
-      'http://localhost:3000',
-      'http://localhost:5500',
-      'http://127.0.0.1:5500',
-      'http://localhost:8000',
-      'http://127.0.0.1:8000'
-    ];
-    
-    // Allow any localhost port for development
+    // Allow localhost with any port
     if (origin.match(/^http:\/\/localhost:\d+$/)) {
       return callback(null, true);
     }
     if (origin.match(/^http:\/\/127\.0\.0\.1:\d+$/)) {
       return callback(null, true);
     }
-    // Allow file:// protocol for local testing
+    
+    // Allow file:// protocol (for local HTML files)
     if (origin === 'null' || origin === 'file://') {
       return callback(null, true);
     }
     
+    // Check against allowed origins
     if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
+      return callback(null, true);
     }
+    
+    // Log blocked origins for debugging
+    console.warn(`⚠️ CORS blocked origin: ${origin}`);
+    callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range']
 }));
 
 // ==================== LOGGING ====================
 app.use(morgan('combined', {
-  skip: (req) => req.path === '/api/health'
+  skip: (req) => req.path === '/api/health' || req.path === '/'
 }));
 
 app.set('trust proxy', 1);
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(compression());
 
 // ==================== RATE LIMITING ====================
@@ -116,6 +129,15 @@ app.use('/api/geocode/', geocodeLimiter);
 app.use('/api/auth/admin/login', loginLimiter);
 app.use('/api/auth/cashier/login', loginLimiter);
 
+// ==================== REQUEST LOGGING (Debug) ====================
+app.use((req, res, next) => {
+  // Log all API requests in development
+  if (process.env.NODE_ENV === 'development' && req.path.startsWith('/api/')) {
+    console.log(`📥 ${req.method} ${req.path} - Origin: ${req.headers.origin || 'unknown'}`);
+  }
+  next();
+});
+
 // ==================== EXPOSE CACHE ====================
 app.set('orderCache', orderCache);
 app.set('productCache', productCache);
@@ -125,7 +147,7 @@ app.set('statsCache', statsCache);
 // Auth routes (PIN-based, email OTP)
 app.use('/api/auth', require('./routes/auth'));
 
-// Admin auth routes - ADDED THIS
+// Admin auth routes
 app.use('/api/admin', require('./routes/admin-auth'));
 
 // Product routes
@@ -160,29 +182,50 @@ app.use('/api/categories', require('./routes/categories'));
 // Order tracking routes
 app.use('/api/orders/track', require('./routes/order-tracking'));
 
+// Delivery zones routes
+app.use('/api/delivery-zones', require('./routes/delivery-zones'));
+
 // ==================== HEALTH CHECK ====================
 app.get('/api/health', (req, res) => {
   const db = getDB();
-  res.json({
+  const health = {
     status: 'ok',
-    database: db ? 'connected' : 'disconnected',
+    timestamp: new Date().toISOString(),
     uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    database: db ? 'connected' : 'disconnected',
     cache: {
       orders: orderCache.keys().length,
       products: productCache.keys().length,
       stats: statsCache.keys().length
     },
-    environment: process.env.NODE_ENV || 'development'
-  });
+    environment: process.env.NODE_ENV || 'development',
+    version: '1.0.0',
+    cors: {
+      allowedOrigins: allowedOrigins,
+      origin: req.headers.origin || 'none'
+    }
+  };
+  res.json(health);
 });
 
-// ==================== ERROR HANDLING ====================
-app.use((err, req, res, next) => {
-  console.error('Server error:', err);
-  res.status(500).json({
-    success: false,
-    message: 'Internal server error',
-    ...(process.env.NODE_ENV === 'development' && { error: err.message })
+// ==================== ROOT ROUTE ====================
+app.get('/', (req, res) => {
+  res.json({
+    status: 'ok',
+    message: '🍾 LiquorBelle API is running',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      health: '/api/health',
+      products: '/api/db/products',
+      orders: '/api/db/orders',
+      auth: '/api/auth',
+      admin: '/api/admin'
+    },
+    cors: {
+      allowedOrigins: allowedOrigins
+    }
   });
 });
 
@@ -190,15 +233,66 @@ app.use((err, req, res, next) => {
 app.use((req, res) => {
   res.status(404).json({
     success: false,
-    message: 'Endpoint not found'
+    message: 'Endpoint not found',
+    path: req.path,
+    method: req.method,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ==================== GLOBAL ERROR HANDLER ====================
+app.use((err, req, res, next) => {
+  console.error('❌ Server error:', {
+    message: err.message,
+    stack: err.stack,
+    path: req.path,
+    method: req.method,
+    body: req.body,
+    query: req.query,
+    params: req.params
+  });
+  
+  // Handle specific error types
+  if (err.name === 'ValidationError') {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation Error',
+      errors: err.errors,
+      timestamp: new Date().toISOString()
+    });
+  }
+  
+  if (err.name === 'MongoError' || err.name === 'MongoServerError') {
+    return res.status(500).json({
+      success: false,
+      message: 'Database Error',
+      error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error',
+      timestamp: new Date().toISOString()
+    });
+  }
+  
+  const statusCode = err.status || 500;
+  res.status(statusCode).json({
+    success: false,
+    message: err.message || 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && { 
+      stack: err.stack,
+      path: req.path,
+      method: req.method
+    }),
+    timestamp: new Date().toISOString()
   });
 });
 
 // ==================== START SERVER ====================
 async function startServer() {
   try {
+    console.log('🔄 Connecting to MongoDB...');
     await connectDB();
+    console.log('✅ MongoDB connected successfully');
+    
     await loadPasswordsFromDB();
+    console.log('✅ Password hashes loaded');
 
     // Auto-clear stats cache daily
     setInterval(() => {
@@ -216,7 +310,7 @@ async function startServer() {
         const db = getDB();
         if (db) {
           const result = await db.collection('otps').deleteMany({
-            created_at: { $lt: new Date(Date.now() - 60 * 60 * 1000) } // 1 hour old
+            created_at: { $lt: new Date(Date.now() - 60 * 60 * 1000) }
           });
           if (result.deletedCount > 0) {
             console.log(`✅ Cleared ${result.deletedCount} expired OTPs`);
@@ -227,52 +321,128 @@ async function startServer() {
       }
     }, 60 * 60 * 1000);
 
-    app.listen(PORT, '0.0.0.0', () => {
+    // Auto-clear expired sessions every 12 hours
+    setInterval(async () => {
+      try {
+        const db = getDB();
+        if (db) {
+          const result = await db.collection('sessions').deleteMany({
+            expiresAt: { $lt: new Date() }
+          });
+          if (result.deletedCount > 0) {
+            console.log(`✅ Cleared ${result.deletedCount} expired sessions`);
+          }
+        }
+      } catch (err) {
+        // Silently fail
+      }
+    }, 12 * 60 * 60 * 1000);
+
+    const server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`
-╔═══════════════════════════════════════════════════════╗
-║                                                       ║
-║   🍾 LIQUORBELLE BACKEND SERVER                     ║
-║                                                       ║
-║   Port: ${PORT}                                       ║
-║   Database: Connected                                ║
-║   Environment: ${process.env.NODE_ENV || 'development'} ║
-║                                                       ║
-║   Email: ${process.env.BREVO_API_KEY ? '✅ Enabled' : '❌ Disabled'}   ║
-║   M-PESA: ${process.env.CONSUMER_KEY ? '✅ Enabled' : '❌ Disabled'}   ║
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║   🍾 LIQUORBELLE BACKEND SERVER                            ║
+║                                                              ║
+║   Port: ${PORT}                                              ║
+║   Database: ✅ Connected                                    ║
+║   Environment: ${process.env.NODE_ENV || 'development'}      ║
+║   Uptime: ${process.uptime()}s                              ║
+║                                                              ║
+║   Email: ${process.env.BREVO_API_KEY ? '✅ Enabled' : '❌ Disabled'}  ║
+║   M-PESA: ${process.env.CONSUMER_KEY ? '✅ Enabled' : '❌ Disabled'}  ║
 ║   Google Sheets: ${process.env.GOOGLE_SHEETS_API_KEY ? '✅ Enabled' : '❌ Disabled'} ║
-║                                                       ║
-║   Auth: PIN-based with Email OTP                     ║
-║                                                       ║
-╚═══════════════════════════════════════════════════════╝
+║                                                              ║
+║   Auth: PIN-based with Email OTP                            ║
+║   CORS: ${allowedOrigins.length} origins allowed              ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
       `);
+      
+      console.log(`📡 Server is ready at http://localhost:${PORT}`);
+      console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
+      console.log(`🌐 CORS allowed origins: ${allowedOrigins.join(', ')}`);
     });
+
+    // ==================== SERVER TIMEOUT SETTINGS ====================
+    server.timeout = 120000; // 2 minutes
+    server.keepAliveTimeout = 120000;
+    server.headersTimeout = 120000;
+
+    return server;
+
   } catch (err) {
-    console.error('❌ Failed to start server:', err);
+    console.error('❌ Failed to start server:', err.message);
+    console.error('Stack:', err.stack);
+    
+    // Give time for logs to flush before exiting
+    setTimeout(() => {
+      process.exit(1);
+    }, 1000);
+  }
+}
+
+// ==================== GRACEFUL SHUTDOWN ====================
+let isShuttingDown = false;
+
+async function gracefulShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  
+  console.log(`🛑 ${signal} received, starting graceful shutdown...`);
+  
+  try {
+    // Close database connections
+    await closeDB();
+    console.log('✅ Database connection closed');
+    
+    // Exit with success code
+    console.log('👋 Shutdown complete');
+    process.exit(0);
+  } catch (err) {
+    console.error('❌ Error during shutdown:', err);
     process.exit(1);
   }
 }
 
-startServer();
+// Handle shutdown signals
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-// ==================== GRACEFUL SHUTDOWN ====================
-process.on('SIGTERM', async () => {
-  console.log('🛑 SIGTERM received, closing server...');
-  await closeDB();
-  process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-  console.log('🛑 SIGINT received, closing server...');
-  await closeDB();
-  process.exit(0);
-});
-
+// ==================== UNCAUGHT EXCEPTION HANDLING ====================
 process.on('uncaughtException', (err) => {
-  console.error('❌ Uncaught Exception:', err);
+  console.error('❌ Uncaught Exception:', err.message);
+  console.error('Stack:', err.stack);
+  
+  // Log to file if possible
+  try {
+    const fs = require('fs');
+    const log = `${new Date().toISOString()} - ${err.message}\n${err.stack}\n\n`;
+    fs.appendFileSync('./error.log', log);
+  } catch (e) {
+    // Ignore
+  }
+  
+  // Don't exit - keep running
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+  console.error('❌ Unhandled Rejection at:', promise);
+  console.error('Reason:', reason);
+  
+  // Log to file if possible
+  try {
+    const fs = require('fs');
+    const log = `${new Date().toISOString()} - Unhandled Rejection: ${reason}\n${promise}\n\n`;
+    fs.appendFileSync('./error.log', log);
+  } catch (e) {
+    // Ignore
+  }
+  
+  // Don't exit - keep running
 });
+
+// ==================== START THE SERVER ====================
+startServer();
 
 module.exports = app;
