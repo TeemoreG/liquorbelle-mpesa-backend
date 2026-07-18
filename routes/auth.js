@@ -188,8 +188,8 @@ router.post('/register', [
   }
 
   try {
-    // Verify OTP
-    const stored = await db.collection('otps').findOne({ email });
+    // ===== VERIFY OTP =====
+    const stored = await db.collection('otps').findOne({ email: email.toLowerCase() });
 
     if (!stored) {
       return res.status(401).json({
@@ -199,7 +199,7 @@ router.post('/register', [
     }
 
     if (isOTPExpired(stored.created_at, 10)) {
-      await db.collection('otps').deleteOne({ email });
+      await db.collection('otps').deleteOne({ email: email.toLowerCase() });
       return res.status(401).json({
         success: false,
         message: 'OTP expired. Please request a new one.'
@@ -209,14 +209,14 @@ router.post('/register', [
     if (stored.otp !== otp) {
       const attempts = (stored.attempts || 0) + 1;
       if (attempts >= 5) {
-        await db.collection('otps').deleteOne({ email });
+        await db.collection('otps').deleteOne({ email: email.toLowerCase() });
         return res.status(401).json({
           success: false,
           message: 'Too many failed attempts. Please request a new OTP.'
         });
       }
       await db.collection('otps').updateOne(
-        { email },
+        { email: email.toLowerCase() },
         { $set: { attempts } }
       );
       return res.status(401).json({
@@ -225,7 +225,68 @@ router.post('/register', [
       });
     }
 
-    await db.collection('otps').deleteOne({ email });
+    // ===== DELETE USED OTP =====
+    await db.collection('otps').deleteOne({ email: email.toLowerCase() });
+
+    // ===== CHECK IF USER EXISTS =====
+    const existingUser = await db.collection('customers').findOne({
+      $or: [
+        { email: email.toLowerCase() },
+        { phone: formatPhone(phone) }
+      ]
+    });
+
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: 'Email or phone already registered. Please login.'
+      });
+    }
+
+    // ===== HASH PIN =====
+    const hashedPin = await bcrypt.hash(pin, 10);
+
+    // ===== CREATE CUSTOMER =====
+    const customer = {
+      email: email.toLowerCase(),
+      name: name.trim(),
+      phone: formatPhone(phone),
+      pin: hashedPin,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastLoginAt: null,
+      orderHistory: [],
+      favorites: []
+    };
+
+    const result = await db.collection('customers').insertOne(customer);
+
+    // ===== GENERATE JWT =====
+    const token = generateToken(result.insertedId.toString(), 'customer');
+
+    console.log(`✅ New customer registered: ${email} | ${formatPhone(phone)}`);
+
+    res.json({
+      success: true,
+      message: 'Account created successfully',
+      token,
+      customer: {
+        id: result.insertedId,
+        email: customer.email,
+        name: customer.name,
+        phone: customer.phone,
+        createdAt: customer.createdAt
+      }
+    });
+
+  } catch (err) {
+    console.error('❌ Register error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create account'
+    });
+  }
+}); 
 
     // ---------- REGISTER ROUTE ----------
 router.post('/register', async (req, res) => {
