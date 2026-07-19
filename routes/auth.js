@@ -2,14 +2,102 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { ObjectId } = require('mongodb');
 const { getDB } = require('../config/database');
-const { otpLimiter, loginLimiter, forgotPinLimiter } = require('../config/rateLimits'); // ← ADDED forgotPinLimiter
+const { otpLimiter, loginLimiter, forgotPinLimiter } = require('../config/rateLimits');
 const { sendOTPEmail } = require('../utils/email');
 const { isValidEmail } = require('../config/constants');
 const { generateToken } = require('../config/passport');
 const { generateOTP, isOTPExpired } = require('../utils/otp');
 const bcrypt = require('bcryptjs');
+const passport = require('passport');
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
 
 const router = express.Router();
+
+// ==================== GOOGLE OAUTH STRATEGY ====================
+if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+  passport.use(new GoogleStrategy({
+      clientID: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      callbackURL: process.env.GOOGLE_CALLBACK_URL || '/api/auth/google/callback'
+    },
+    async function(accessToken, refreshToken, profile, done) {
+      try {
+        const db = getDB();
+        const email = profile.emails?.[0]?.value;
+        
+        if (!email) {
+          return done(new Error('No email from Google'), null);
+        }
+
+        let user = await db.collection('customers').findOne({ 
+          email: email.toLowerCase() 
+        });
+
+        if (!user) {
+          // Create new user from Google data
+          const newUser = {
+            email: email.toLowerCase(),
+            name: profile.displayName || profile.name?.givenName || 'Google User',
+            phone: '',
+            googleId: profile.id,
+            googleData: {
+              accessToken: accessToken,
+              refreshToken: refreshToken,
+              profile: profile._json
+            },
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            lastLoginAt: new Date(),
+            orderHistory: [],
+            favorites: []
+          };
+
+          const result = await db.collection('customers').insertOne(newUser);
+          user = { ...newUser, _id: result.insertedId };
+          console.log(`✅ New Google user registered: ${email}`);
+        } else {
+          // Update existing user with Google data
+          await db.collection('customers').updateOne(
+            { _id: user._id },
+            { 
+              $set: { 
+                googleId: profile.id,
+                googleData: {
+                  accessToken: accessToken,
+                  refreshToken: refreshToken,
+                  profile: profile._json
+                },
+                updatedAt: new Date(),
+                lastLoginAt: new Date()
+              } 
+            }
+          );
+          console.log(`✅ Google user logged in: ${email}`);
+        }
+
+        return done(null, user);
+      } catch (err) {
+        console.error('❌ Google auth error:', err);
+        return done(err, null);
+      }
+    }
+  ));
+
+  // Serialize/Deserialize user for session
+  passport.serializeUser((user, done) => {
+    done(null, user._id);
+  });
+
+  passport.deserializeUser(async (id, done) => {
+    try {
+      const db = getDB();
+      const user = await db.collection('customers').findOne({ _id: id });
+      done(null, user);
+    } catch (err) {
+      done(err, null);
+    }
+  });
+}
 
 // ==================== HELPER: Validate Phone ====================
 function isValidPhone(phone) {
@@ -61,6 +149,27 @@ function formatPhoneForDisplay(phone) {
   
   return phone;
 }
+
+// ==================== GOOGLE AUTH ROUTES ====================
+router.get('/google',
+  passport.authenticate('google', { scope: ['profile', 'email'] })
+);
+
+router.get('/google/callback',
+  passport.authenticate('google', { failureRedirect: '/login' }),
+  function(req, res) {
+    try {
+      const user = req.user;
+      const token = generateToken(user._id.toString(), 'customer');
+      
+      const frontendUrl = process.env.FRONTEND_URL || 'https://teemoreg.github.io/liquorbelle/liquourbelle';
+      res.redirect(`${frontendUrl}/accounts.html?google_auth=success&token=${token}&email=${user.email}&name=${encodeURIComponent(user.name)}&phone=${user.phone || ''}`);
+    } catch (err) {
+      console.error('❌ Google callback error:', err);
+      res.redirect('/login');
+    }
+  }
+);
 
 // ==================== SEND EMAIL OTP ====================
 router.post('/send-email-otp', otpLimiter, [
@@ -266,6 +375,49 @@ router.post('/register', [
   }
 });
 
+// ==================== CHECK EMAIL EXISTS ====================
+router.post('/check-email', [
+  body('email').isEmail().withMessage('Valid email required')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation failed',
+      errors: errors.array()
+    });
+  }
+
+  const { email } = req.body;
+  const db = getDB();
+  if (!db) {
+    return res.status(503).json({
+      success: false,
+      message: 'Database connecting...'
+    });
+  }
+
+  try {
+    const emailLower = email.toLowerCase().trim();
+
+    const existingUser = await db.collection('customers').findOne({
+      email: emailLower
+    });
+
+    res.json({
+      success: true,
+      exists: !!existingUser
+    });
+
+  } catch (err) {
+    console.error('❌ Check email error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check email'
+    });
+  }
+});
+
 // ==================== LOGIN WITH EMAIL + PIN ====================
 router.post('/login', loginLimiter, [
   body('email').isEmail().withMessage('Valid email required'),
@@ -300,9 +452,9 @@ router.post('/login', loginLimiter, [
     });
 
     if (!customer) {
-      return res.status(401).json({
+      return res.status(404).json({
         success: false,
-        message: 'Invalid email or PIN'
+        message: 'Email not found'
       });
     }
 
@@ -318,11 +470,10 @@ router.post('/login', loginLimiter, [
     if (!isMatch) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid email or PIN'
+        message: 'Invalid PIN'
       });
     }
 
-    // ===== UPDATE LAST LOGIN =====
     await db.collection('customers').updateOne(
       { _id: customer._id },
       {
@@ -393,9 +544,9 @@ router.post('/login-phone', loginLimiter, [
     });
 
     if (!customer) {
-      return res.status(401).json({
+      return res.status(404).json({
         success: false,
-        message: 'Invalid phone or PIN'
+        message: 'Phone not found'
       });
     }
 
@@ -411,11 +562,10 @@ router.post('/login-phone', loginLimiter, [
     if (!isMatch) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid phone or PIN'
+        message: 'Invalid PIN'
       });
     }
 
-    // ===== UPDATE LAST LOGIN =====
     await db.collection('customers').updateOne(
       { _id: customer._id },
       {
@@ -549,38 +699,6 @@ router.post('/forgot-pin', forgotPinLimiter, [
   }
 });
 
- // ==================== DEBUG: Check Database ====================
-router.get('/debug/db-check', async (req, res) => {
-  try {
-    const db = getDB();
-    const count = await db.collection('customers').countDocuments();
-    const latest = await db.collection('customers')
-      .find()
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .toArray();
-    
-    res.json({
-      success: true,
-      database: db.databaseName,
-      cluster: process.env.MONGODB_URI ? 'Using env URI' : 'No URI',
-      customerCount: count,
-      latest: latest.map(c => ({
-        id: c._id,
-        email: c.email,
-        name: c.name,
-        phone: c.phone,
-        createdAt: c.createdAt
-      }))
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
 // ==================== CHECK IF USER EXISTS ====================
 router.post('/check-user', [
   body('name').optional().isLength({ min: 2, max: 100 }).withMessage('Name must be between 2 and 100 characters'),
@@ -606,7 +724,6 @@ router.post('/check-user', [
   }
 
   try {
-    // Build query with provided fields
     const query = [];
     if (email) query.push({ email: email.toLowerCase() });
     if (phone) query.push({ phone: formatPhone(phone) });
@@ -619,7 +736,6 @@ router.post('/check-user', [
       });
     }
 
-    // Find any user matching any of the fields
     const existingUser = await db.collection('customers').findOne({
       $or: query
     });
@@ -761,7 +877,6 @@ router.post('/reset-pin', [
 
 // ==================== DEBUG: Check Database (SECURED) ====================
 router.get('/debug/db-check', async (req, res) => {
-  // Check for debug token - must match env variable
   const debugToken = req.headers['x-debug-token'] || req.query.token;
   const expectedToken = process.env.DEBUG_TOKEN;
   

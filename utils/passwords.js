@@ -92,9 +92,17 @@ async function updatePasswords(adminPassword, cashierPassword) {
   const db = getDB();
   if (!db) throw new Error('Database not connected');
 
+  // Check if at least one password is provided
+  const hasAdmin = adminPassword !== undefined && adminPassword !== '';
+  const hasCashier = cashierPassword !== undefined && cashierPassword !== '';
+
+  if (!hasAdmin && !hasCashier) {
+    throw new Error('At least one password is required');
+  }
+
   const updateValue = { updated_at: new Date() };
 
-  if (adminPassword !== undefined && adminPassword !== '') {
+  if (hasAdmin) {
     if (adminPassword.length < 6) {
       throw new Error('Admin password must be at least 6 characters');
     }
@@ -104,7 +112,7 @@ async function updatePasswords(adminPassword, cashierPassword) {
     updateValue.adminPasswordHash = await bcrypt.hash(adminPassword, 10);
   }
 
-  if (cashierPassword !== undefined && cashierPassword !== '') {
+  if (hasCashier) {
     if (cashierPassword.length < 6) {
       throw new Error('Cashier password must be at least 6 characters');
     }
@@ -112,10 +120,6 @@ async function updatePasswords(adminPassword, cashierPassword) {
       throw new Error('Cashier password must be less than 100 characters');
     }
     updateValue.cashierPasswordHash = await bcrypt.hash(cashierPassword, 10);
-  }
-
-  if (Object.keys(updateValue).length === 1) {
-    throw new Error('At least one password required');
   }
 
   await db.collection('admin_settings').updateOne(

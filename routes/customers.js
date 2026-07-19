@@ -12,13 +12,17 @@ const router = express.Router();
 function isValidPhone(phone) {
   if (!phone) return false;
   const cleaned = phone.replace(/\D/g, '');
-  return cleaned.length === 10 && (cleaned.startsWith('07') || cleaned.startsWith('01'));
+  return cleaned.length >= 10 && cleaned.length <= 15 && 
+         (cleaned.startsWith('07') || cleaned.startsWith('01') || cleaned.startsWith('254'));
 }
 
 function formatPhone(phone) {
   const cleaned = phone.replace(/\D/g, '');
   if (cleaned.length === 10 && (cleaned.startsWith('07') || cleaned.startsWith('01'))) {
     return '254' + cleaned.slice(1);
+  }
+  if (cleaned.length === 12 && cleaned.startsWith('254')) {
+    return cleaned;
   }
   return cleaned;
 }
@@ -55,6 +59,8 @@ router.get('/me', requireCustomer, async (req, res) => {
         address: customer.address || '',
         favorites: customer.favorites || [],
         orderHistory: customer.orderHistory || [],
+        googleId: customer.googleId || null,
+        authMethod: customer.googleId ? 'google' : 'email',
         createdAt: customer.createdAt || customer.created_at,
         updatedAt: customer.updatedAt || customer.updated_at
       }
@@ -108,6 +114,7 @@ router.get('/phone/:phone', async (req, res) => {
         email: customer.email || '',
         phone: customer.phone,
         address: customer.address || '',
+        googleId: customer.googleId || null,
         createdAt: customer.createdAt || customer.created_at
       }
     });
@@ -159,6 +166,7 @@ router.get('/email/:email', async (req, res) => {
         email: customer.email,
         phone: customer.phone || '',
         address: customer.address || '',
+        googleId: customer.googleId || null,
         createdAt: customer.createdAt || customer.created_at
       }
     });
@@ -495,61 +503,6 @@ router.put('/me/favorites', requireCustomer, [
     });
   }
 });
-// ==================== DEBUG: Check Database ====================
-router.get('/debug/db-check', async (req, res) => {
-  try {
-    const db = getDB();
-    if (!db) {
-      return res.status(503).json({
-        success: false,
-        message: 'Database connecting...'
-      });
-    }
-
-    // Get count
-    const count = await db.collection('customers').countDocuments();
-    
-    // Get latest users
-    const latest = await db.collection('customers')
-      .find()
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .toArray();
-    
-    // Get collection stats
-    const stats = await db.collection('customers').stats().catch(() => null);
-
-    res.json({
-      success: true,
-      database: db.databaseName,
-      cluster: process.env.MONGODB_URI ? 'Using env URI' : 'No URI',
-      customerCount: count,
-      latest: latest.map(c => ({
-        id: c._id,
-        email: c.email,
-        name: c.name,
-        phone: c.phone,
-        createdAt: c.createdAt
-      })),
-      stats: stats ? {
-        size: stats.size,
-        count: stats.count,
-        avgObjSize: stats.avgObjSize,
-        storageSize: stats.storageSize,
-        indexes: stats.indexes,
-        totalIndexSize: stats.totalIndexSize
-      } : null,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Debug DB check error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      stack: error.stack
-    });
-  }
-});
 
 // ==================== GET FAVORITES ====================
 router.get('/me/favorites', requireCustomer, async (req, res) => {
@@ -766,6 +719,60 @@ router.delete('/me', requireCustomer, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to delete account'
+    });
+  }
+});
+
+// ==================== DEBUG: Check Database ====================
+router.get('/debug/db-check', async (req, res) => {
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({
+        success: false,
+        message: 'Database connecting...'
+      });
+    }
+
+    const count = await db.collection('customers').countDocuments();
+    
+    const latest = await db.collection('customers')
+      .find()
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .toArray();
+    
+    const stats = await db.collection('customers').stats().catch(() => null);
+
+    res.json({
+      success: true,
+      database: db.databaseName,
+      cluster: process.env.MONGODB_URI ? 'Using env URI' : 'No URI',
+      customerCount: count,
+      latest: latest.map(c => ({
+        id: c._id,
+        email: c.email,
+        name: c.name,
+        phone: c.phone,
+        googleId: c.googleId || null,
+        createdAt: c.createdAt
+      })),
+      stats: stats ? {
+        size: stats.size,
+        count: stats.count,
+        avgObjSize: stats.avgObjSize,
+        storageSize: stats.storageSize,
+        indexes: stats.indexes,
+        totalIndexSize: stats.totalIndexSize
+      } : null,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Debug DB check error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack
     });
   }
 });

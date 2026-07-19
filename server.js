@@ -18,6 +18,10 @@ const {
 const { orderCache, productCache, statsCache } = require('./utils/cache');
 const { loadPasswordsFromDB } = require('./utils/passwords');
 
+// ==================== ADD THESE TWO LINES ====================
+const session = require('express-session');
+const passport = require('passport');
+
 // ==================== VALIDATE ENVIRONMENT ====================
 validateEnv();
 
@@ -58,28 +62,19 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
-    
-    // Allow localhost with any port
     if (origin.match(/^http:\/\/localhost:\d+$/)) {
       return callback(null, true);
     }
     if (origin.match(/^http:\/\/127\.0\.0\.1:\d+$/)) {
       return callback(null, true);
     }
-    
-    // Allow file:// protocol (for local HTML files)
     if (origin === 'null' || origin === 'file://') {
       return callback(null, true);
     }
-    
-    // Check against allowed origins
     if (allowedOrigins.indexOf(origin) !== -1) {
       return callback(null, true);
     }
-    
-    // Log blocked origins for debugging
     console.warn(`⚠️ CORS blocked origin: ${origin}`);
     callback(new Error('Not allowed by CORS'));
   },
@@ -88,6 +83,34 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
   exposedHeaders: ['Content-Range', 'X-Content-Range']
 }));
+
+// ==================== ADD SESSION & PASSPORT HERE ====================
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'your-secret-key',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { 
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 24 * 60 * 60 * 1000
+  }
+}));
+
+app.use(passport.initialize());
+app.use(passport.session());
+
+// ... rest of your code (logging, rate limiting, etc.)
+
+// ==================== ROUTES ====================
+// Auth routes (PIN-based, email OTP)
+app.use('/api/auth', require('./routes/auth'));
+
+// ==================== ADD GOOGLE AUTH ROUTE HERE ====================
+app.use('/api/auth', require('./routes/google-auth'));
+
+// ... rest of your routes
+
+// ==================== START SERVER ====================
+// ... your existing server start code
 
 // ==================== LOGGING ====================
 app.use(morgan('combined', {
@@ -207,6 +230,19 @@ app.get('/api/health', (req, res) => {
     }
   };
   res.json(health);
+});
+
+// ==================== SIMPLE HEALTH CHECK FOR RENDER ====================
+app.get('/health', (req, res) => {
+  res.status(200).send('OK');
+});
+
+app.head('/health', (req, res) => {
+  res.status(200).send('OK');
+});
+
+app.get('/ping', (req, res) => {
+  res.status(200).send('pong');
 });
 
 // ==================== ROOT ROUTE ====================
@@ -374,12 +410,36 @@ async function startServer() {
   } catch (err) {
     console.error('❌ Failed to start server:', err.message);
     console.error('Stack:', err.stack);
-    
-    // Give time for logs to flush before exiting
-    setTimeout(() => {
-      process.exit(1);
-    }, 1000);
+    // Don't exit - let the retry mechanism handle it
+    throw err;
   }
+}
+
+// ==================== KEEP-ALIVE MECHANISM ====================
+// Prevents Render from shutting down due to inactivity
+setInterval(() => {
+  console.log('🔄 Keep-alive ping at', new Date().toISOString());
+}, 60000); // Every 60 seconds
+
+// ==================== RETRY MECHANISM FOR STARTUP ====================
+// If server fails to start, retry instead of exiting
+async function startServerWithRetry() {
+  let retries = 0;
+  const maxRetries = 5;
+  
+  while (retries < maxRetries) {
+    try {
+      await startServer();
+      return; // Success - exit the loop
+    } catch (err) {
+      retries++;
+      console.log(`❌ Start attempt ${retries} failed. Retrying in ${retries * 5} seconds...`);
+      await new Promise(resolve => setTimeout(resolve, retries * 5000));
+    }
+  }
+  
+  console.error('❌ Failed to start server after multiple attempts');
+  process.exit(1);
 }
 
 // ==================== GRACEFUL SHUTDOWN ====================
@@ -442,7 +502,7 @@ process.on('unhandledRejection', (reason, promise) => {
   // Don't exit - keep running
 });
 
-// ==================== START THE SERVER ====================
-startServer();
+// ==================== START THE SERVER WITH RETRY ====================
+startServerWithRetry();
 
 module.exports = app;
