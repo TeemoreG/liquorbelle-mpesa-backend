@@ -45,6 +45,7 @@ passport.use(new GoogleStrategy({
 
         const result = await db.collection('customers').insertOne(newUser);
         user = { ...newUser, _id: result.insertedId };
+        console.log(`✅ New Google user registered: ${email}`);
       } else {
         await db.collection('customers').updateOne(
           { _id: user._id },
@@ -61,10 +62,12 @@ passport.use(new GoogleStrategy({
             } 
           }
         );
+        console.log(`✅ Google user logged in: ${email}`);
       }
 
       return done(null, user);
     } catch (err) {
+      console.error('❌ Google auth error:', err);
       return done(err, null);
     }
   }
@@ -93,11 +96,18 @@ router.get('/google',
 router.get('/google/callback',
   passport.authenticate('google', { failureRedirect: '/login' }),
   function(req, res) {
-    const user = req.user;
-    const token = generateToken(user._id.toString(), 'customer');
-    
-    const frontendUrl = process.env.FRONTEND_URL || 'https://teemoreg.github.io/liquorbelle/liquourbelle';
-    res.redirect(`${frontendUrl}/accounts.html?google_auth=success&token=${token}&email=${user.email}&name=${encodeURIComponent(user.name)}&phone=${user.phone || ''}`);
+    try {
+      const user = req.user;
+      const token = generateToken(user._id.toString(), 'customer');
+      
+      const frontendUrl = process.env.FRONTEND_URL || 'https://teemoreg.github.io/liquorbelle/liquourbelle';
+      
+      // Redirect to index.html with welcome message
+      res.redirect(`${frontendUrl}/index.html?google_auth=success&token=${token}&email=${user.email}&name=${encodeURIComponent(user.name)}&phone=${user.phone || ''}`);
+    } catch (err) {
+      console.error('❌ Google callback error:', err);
+      res.redirect('/login');
+    }
   }
 );
 
