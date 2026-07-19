@@ -605,6 +605,14 @@ router.post('/check-user', [
     });
   }
 
+  // FIX: Check if req.body exists
+  if (!req.body || Object.keys(req.body).length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'Request body is empty'
+    });
+  }
+
   const { name, email, phone } = req.body;
   const db = getDB();
   if (!db) {
@@ -627,8 +635,11 @@ router.post('/check-user', [
       });
     }
 
+    // FIX: Use projection to only get needed fields (faster)
     const existingUser = await db.collection('customers').findOne({
       $or: query
+    }, {
+      projection: { email: 1, phone: 1, name: 1 }
     });
 
     if (existingUser) {
