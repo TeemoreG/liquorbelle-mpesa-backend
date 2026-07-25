@@ -413,12 +413,6 @@ async function startServer() {
   }
 }
 
-// ==================== KEEP-ALIVE MECHANISM ====================
-// Prevents Render from shutting down due to inactivity
-setInterval(() => {
-  console.log('🔄 Keep-alive ping at', new Date().toISOString());
-}, 60000); // Every 60 seconds
-
 // ==================== RETRY MECHANISM FOR STARTUP ====================
 // If server fails to start, retry instead of exiting
 async function startServerWithRetry() {
