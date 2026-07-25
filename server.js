@@ -98,7 +98,6 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
-// ... rest of your code (logging, rate limiting, etc.)
 
 // ==================== ROUTES ====================
 // Auth routes (PIN-based, email OTP)
@@ -107,7 +106,6 @@ app.use('/api/auth', require('./routes/auth'));
 // ==================== ADD GOOGLE AUTH ROUTE HERE ====================
 app.use('/api/auth', require('./routes/google-auth'));
 
-// ... rest of your routes
 
 // ==================== START SERVER ====================
 // ... your existing server start code
