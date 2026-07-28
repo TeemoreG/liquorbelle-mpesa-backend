@@ -5,8 +5,9 @@ const { getDB } = require('../config/database');
 const { otpLimiter } = require('../config/rateLimits');
 const { sendOTPEmail } = require('../utils/email');
 const { isValidEmail } = require('../config/constants');
-const { generateToken } = require('../config/passport'); // ✅ FIXED
+const { generateToken } = require('../config/passport');
 const { generateOTP, isOTPExpired } = require('../utils/otp');
+const bcrypt = require('bcryptjs');
 
 const router = express.Router();
 
@@ -86,7 +87,8 @@ router.post('/verify-otp', [
   body('email').isEmail().withMessage('Valid email required'),
   body('otp').notEmpty().withMessage('OTP required'),
   body('name').optional().isString().isLength({ min: 2, max: 100 }).withMessage('Name must be 2-100 characters'),
-  body('phone').optional().isString().matches(/^[0-9]{10,12}$/).withMessage('Phone must be 10-12 digits')
+  body('phone').optional().isString().matches(/^[0-9]{10,12}$/).withMessage('Phone must be 10-12 digits'),
+  body('pin').optional().isString().isLength({ min: 4, max: 4 }).withMessage('PIN must be exactly 4 digits')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -97,7 +99,7 @@ router.post('/verify-otp', [
     });
   }
 
-  const { email, otp, name, phone } = req.body;
+  const { email, otp, name, phone, pin } = req.body;
 
   const db = getDB();
   if (!db) {
@@ -150,31 +152,46 @@ router.post('/verify-otp', [
       email: email.toLowerCase()
     });
 
+    // Hash PIN if provided
+    let hashedPin = null;
+    if (pin) {
+      hashedPin = await bcrypt.hash(pin, 10);
+    }
+
     if (!customer) {
+      // NEW CUSTOMER - create with PIN
       const newCustomer = {
         email: email.toLowerCase(),
         name: name || email.split('@')[0] || 'Customer',
         phone: phone || '',
+        pin: hashedPin, // ← Store hashed PIN
+        authMethod: 'email',
         createdAt: new Date(),
         updatedAt: new Date(),
+        lastLoginAt: new Date(),
         orderHistory: [],
         favorites: []
       };
 
       const result = await db.collection('customers').insertOne(newCustomer);
       customer = { _id: result.insertedId, ...newCustomer };
-      console.log(`✅ New customer created: ${email}`);
+      console.log(`✅ New customer created with PIN: ${email}`);
     } else {
+      // EXISTING CUSTOMER - update fields, preserve PIN if not provided
       const updates = {};
       if (name) updates.name = name;
       if (phone) updates.phone = phone;
+      if (hashedPin) updates.pin = hashedPin; // ← Update PIN if provided
+      updates.updatedAt = new Date();
+      updates.lastLoginAt = new Date();
+
       if (Object.keys(updates).length > 0) {
-        updates.updatedAt = new Date();
         await db.collection('customers').updateOne(
           { email: email.toLowerCase() },
           { $set: updates }
         );
         customer = { ...customer, ...updates };
+        console.log(`✅ Customer updated: ${email}`);
       }
     }
 
@@ -189,6 +206,7 @@ router.post('/verify-otp', [
         email: customer.email,
         name: customer.name,
         phone: customer.phone || '',
+        hasPin: !!customer.pin, // ← Send back whether user has PIN
         createdAt: customer.createdAt
       }
     });
@@ -256,7 +274,8 @@ router.post('/refresh-token', [
         id: customer._id,
         email: customer.email,
         name: customer.name,
-        phone: customer.phone || ''
+        phone: customer.phone || '',
+        hasPin: !!customer.pin
       }
     });
   } catch (err) {
