@@ -76,7 +76,8 @@ router.get('/me', requireCustomer, async (req, res) => {
         googleId: customer.googleId || null,
         authMethod: customer.googleId ? 'google' : 'email',
         createdAt: customer.createdAt || customer.created_at,
-        updatedAt: customer.updatedAt || customer.updated_at
+        updatedAt: customer.updatedAt || customer.updated_at,
+        hasPin: !!customer.pin  // ✅ Added: returns true if PIN exists
       }
     });
   } catch (err) {
@@ -838,6 +839,371 @@ router.delete('/me', requireCustomer, async (req, res) => {
   }
 });
 
+// ============================================================
+// ADDRESSES CRUD - NEW ENDPOINTS
+// ============================================================
+
+// GET all addresses for current user
+router.get('/me/addresses', requireCustomer, async (req, res) => {
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({
+        success: false,
+        message: 'Database connecting...'
+      });
+    }
+
+    const customerId = req.customer.userId;
+
+    const customer = await db.collection('customers').findOne({
+      _id: new ObjectId(customerId)
+    });
+
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Customer not found'
+      });
+    }
+
+    // Check if customer was soft deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated'
+      });
+    }
+
+    // Get addresses from customer document
+    const addresses = customer.addresses || [];
+
+    res.json({
+      success: true,
+      addresses: addresses
+    });
+  } catch (err) {
+    console.error('Error fetching addresses:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch addresses'
+    });
+  }
+});
+
+// POST a new address
+router.post('/me/addresses', requireCustomer, [
+  body('label').optional().isString().withMessage('Label must be a string'),
+  body('line1').notEmpty().withMessage('Address line is required'),
+  body('area').optional().isString(),
+  body('landmark').optional().isString(),
+  body('phone').optional().isString(),
+  body('isDefault').optional().isBoolean()
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation failed',
+      errors: errors.array()
+    });
+  }
+
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({
+        success: false,
+        message: 'Database connecting...'
+      });
+    }
+
+    const customerId = req.customer.userId;
+    const { label, line1, area, landmark, phone, isDefault } = req.body;
+
+    const customer = await db.collection('customers').findOne({
+      _id: new ObjectId(customerId)
+    });
+
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Customer not found'
+      });
+    }
+
+    // Check if customer was soft deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated'
+      });
+    }
+
+    const addresses = customer.addresses || [];
+    const newAddress = {
+      id: 'addr_' + Date.now(),
+      label: label || 'Home',
+      line1: line1,
+      area: area || '',
+      landmark: landmark || '',
+      phone: phone || '',
+      isDefault: isDefault || false,
+      createdAt: new Date()
+    };
+
+    // If this address is default, unset others
+    if (newAddress.isDefault) {
+      addresses.forEach(a => a.isDefault = false);
+    }
+
+    addresses.push(newAddress);
+
+    await db.collection('customers').updateOne(
+      { _id: new ObjectId(customerId) },
+      { $set: { addresses: addresses, updatedAt: new Date() } }
+    );
+
+    res.json({
+      success: true,
+      message: 'Address added successfully',
+      address: newAddress,
+      addresses: addresses
+    });
+  } catch (err) {
+    console.error('Error adding address:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to add address'
+    });
+  }
+});
+
+// PUT update an address
+router.put('/me/addresses/:addressId', requireCustomer, [
+  body('label').optional().isString(),
+  body('line1').optional().isString(),
+  body('area').optional().isString(),
+  body('landmark').optional().isString(),
+  body('phone').optional().isString(),
+  body('isDefault').optional().isBoolean()
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation failed',
+      errors: errors.array()
+    });
+  }
+
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({
+        success: false,
+        message: 'Database connecting...'
+      });
+    }
+
+    const customerId = req.customer.userId;
+    const { addressId } = req.params;
+    const { label, line1, area, landmark, phone, isDefault } = req.body;
+
+    const customer = await db.collection('customers').findOne({
+      _id: new ObjectId(customerId)
+    });
+
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Customer not found'
+      });
+    }
+
+    // Check if customer was soft deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated'
+      });
+    }
+
+    const addresses = customer.addresses || [];
+    const addressIndex = addresses.findIndex(a => a.id === addressId);
+
+    if (addressIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        message: 'Address not found'
+      });
+    }
+
+    // Update address
+    if (label) addresses[addressIndex].label = label;
+    if (line1) addresses[addressIndex].line1 = line1;
+    if (area) addresses[addressIndex].area = area;
+    if (landmark) addresses[addressIndex].landmark = landmark;
+    if (phone) addresses[addressIndex].phone = phone;
+    if (isDefault !== undefined) addresses[addressIndex].isDefault = isDefault;
+
+    // If this address is default, unset others
+    if (addresses[addressIndex].isDefault) {
+      addresses.forEach((a, index) => {
+        if (index !== addressIndex) a.isDefault = false;
+      });
+    }
+
+    addresses[addressIndex].updatedAt = new Date();
+
+    await db.collection('customers').updateOne(
+      { _id: new ObjectId(customerId) },
+      { $set: { addresses: addresses, updatedAt: new Date() } }
+    );
+
+    res.json({
+      success: true,
+      message: 'Address updated successfully',
+      address: addresses[addressIndex],
+      addresses: addresses
+    });
+  } catch (err) {
+    console.error('Error updating address:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update address'
+    });
+  }
+});
+
+// DELETE an address
+router.delete('/me/addresses/:addressId', requireCustomer, async (req, res) => {
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({
+        success: false,
+        message: 'Database connecting...'
+      });
+    }
+
+    const customerId = req.customer.userId;
+    const { addressId } = req.params;
+
+    const customer = await db.collection('customers').findOne({
+      _id: new ObjectId(customerId)
+    });
+
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Customer not found'
+      });
+    }
+
+    // Check if customer was soft deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated'
+      });
+    }
+
+    const addresses = customer.addresses || [];
+    const newAddresses = addresses.filter(a => a.id !== addressId);
+
+    if (newAddresses.length === addresses.length) {
+      return res.status(404).json({
+        success: false,
+        message: 'Address not found'
+      });
+    }
+
+    await db.collection('customers').updateOne(
+      { _id: new ObjectId(customerId) },
+      { $set: { addresses: newAddresses, updatedAt: new Date() } }
+    );
+
+    res.json({
+      success: true,
+      message: 'Address deleted successfully',
+      addresses: newAddresses
+    });
+  } catch (err) {
+    console.error('Error deleting address:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete address'
+    });
+  }
+});
+
+// PUT set default address
+router.put('/me/addresses/:addressId/default', requireCustomer, async (req, res) => {
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({
+        success: false,
+        message: 'Database connecting...'
+      });
+    }
+
+    const customerId = req.customer.userId;
+    const { addressId } = req.params;
+
+    const customer = await db.collection('customers').findOne({
+      _id: new ObjectId(customerId)
+    });
+
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Customer not found'
+      });
+    }
+
+    // Check if customer was soft deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated'
+      });
+    }
+
+    const addresses = customer.addresses || [];
+    const addressIndex = addresses.findIndex(a => a.id === addressId);
+
+    if (addressIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        message: 'Address not found'
+      });
+    }
+
+    // Set all to false, then set selected to true
+    addresses.forEach(a => a.isDefault = false);
+    addresses[addressIndex].isDefault = true;
+
+    await db.collection('customers').updateOne(
+      { _id: new ObjectId(customerId) },
+      { $set: { addresses: addresses, updatedAt: new Date() } }
+    );
+
+    res.json({
+      success: true,
+      message: 'Default address updated',
+      addresses: addresses
+    });
+  } catch (err) {
+    console.error('Error setting default address:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to set default address'
+    });
+  }
+});
+
 // ==================== DEBUG: Check Database ====================
 router.get('/debug/db-check', async (req, res) => {
   try {
@@ -872,6 +1238,7 @@ router.get('/debug/db-check', async (req, res) => {
         googleId: c.googleId || null,
         deleted: c.deleted || false,
         deletedAt: c.deletedAt || null,
+        hasPin: !!c.pin,
         createdAt: c.createdAt
       })),
       stats: stats ? {
