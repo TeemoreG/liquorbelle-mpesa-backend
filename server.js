@@ -4,6 +4,8 @@ const cors = require('cors');
 const compression = require('compression');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const session = require('express-session');
+const passport = require('passport');
 const { connectDB, getDB, closeDB } = require('./config/database');
 const { validateEnv } = require('./config/env');
 const { 
@@ -18,17 +20,17 @@ const {
 const { orderCache, productCache, statsCache } = require('./utils/cache');
 const { loadPasswordsFromDB } = require('./utils/passwords');
 
-// ==================== ADD THESE TWO LINES ====================
-const session = require('express-session');
-const passport = require('passport');
-
 // ==================== VALIDATE ENVIRONMENT ====================
 validateEnv();
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// ==================== SECURITY MIDDLEWARE ====================
+// ============================================================
+// 1. MIDDLEWARE - MUST BE FIRST (BEFORE ANY ROUTES)
+// ============================================================
+
+// Security middleware
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
   contentSecurityPolicy: {
@@ -43,7 +45,12 @@ app.use(helmet({
   },
 }));
 
-// ==================== CORS - FIXED ====================
+// Body parser - MUST BE BEFORE ROUTES
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(compression());
+
+// CORS
 const allowedOrigins = [
   'https://teemoreg.github.io',
   'https://liquorbelle-mpesa-backend.onrender.com',
@@ -84,7 +91,7 @@ app.use(cors({
   exposedHeaders: ['Content-Range', 'X-Content-Range']
 }));
 
-// ==================== ADD SESSION & PASSPORT HERE ====================
+// Session & Passport
 app.use(session({
   secret: process.env.SESSION_SECRET || 'your-secret-key',
   resave: false,
@@ -98,75 +105,63 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
-
-// ==================== ROUTES ====================
-// Auth routes (PIN-based, email OTP)
-app.use('/api/auth', require('./routes/auth'));
-
-// ==================== ADD GOOGLE AUTH ROUTE HERE ====================
-app.use('/api/auth', require('./routes/google-auth'));
-
-
-// ==================== START SERVER ====================
-// ... your existing server start code
-
-// ==================== LOGGING ====================
+// Logging
 app.use(morgan('combined', {
   skip: (req) => req.path === '/api/health' || req.path === '/'
 }));
 
 app.set('trust proxy', 1);
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-app.use(compression());
 
-// ==================== RATE LIMITING ====================
+// ============================================================
+// 2. RATE LIMITING
+// ============================================================
 app.use('/api/', generalLimiter);
 
-// OTP rate limiter (email only)
 app.use('/api/send-email-otp', otpLimiter);
 app.use('/api/auth/send-email-otp', otpLimiter);
 
-// Auth rate limiters
 app.use('/api/auth/register', loginLimiter);
 app.use('/api/auth/login', loginLimiter);
 app.use('/api/auth/login-phone', loginLimiter);
 app.use('/api/auth/forgot-pin', loginLimiter);
 app.use('/api/auth/reset-pin', loginLimiter);
 
-// Payment & order rate limiters
 app.use('/api/stkpush', stkLimiter);
 app.use('/api/orders/pod', orderCreateLimiter);
 app.use('/api/payments/stkpush', stkLimiter);
 
-// Admin rate limiters
 app.use('/api/db/', adminLimiter);
 app.use('/api/admin/', adminLimiter);
 
-// Geocode rate limiter
 app.use('/api/geocode/', geocodeLimiter);
 
-// Admin/Cashier login rate limiters
 app.use('/api/auth/admin/login', loginLimiter);
 app.use('/api/auth/cashier/login', loginLimiter);
 
-// ==================== REQUEST LOGGING (Debug) ====================
+// ============================================================
+// 3. REQUEST LOGGING (Debug)
+// ============================================================
 app.use((req, res, next) => {
-  // Log all API requests in development
   if (process.env.NODE_ENV === 'development' && req.path.startsWith('/api/')) {
     console.log(`📥 ${req.method} ${req.path} - Origin: ${req.headers.origin || 'unknown'}`);
   }
   next();
 });
 
-// ==================== EXPOSE CACHE ====================
+// ============================================================
+// 4. EXPOSE CACHE
+// ============================================================
 app.set('orderCache', orderCache);
 app.set('productCache', productCache);
 app.set('statsCache', statsCache);
 
-// ==================== ROUTES ====================
-// Auth routes (PIN-based, email OTP)
+// ============================================================
+// 5. ROUTES - AFTER ALL MIDDLEWARE
+// ============================================================
+
+// Auth routes
 app.use('/api/auth', require('./routes/auth'));
+app.use('/api/auth', require('./routes/google-auth'));
 
 // Admin auth routes
 app.use('/api/admin', require('./routes/admin-auth'));
@@ -206,7 +201,9 @@ app.use('/api/orders/track', require('./routes/order-tracking'));
 // Delivery zones routes
 app.use('/api/delivery-zones', require('./routes/delivery-zones'));
 
-// ==================== HEALTH CHECK ====================
+// ============================================================
+// 6. HEALTH CHECK & ROOT
+// ============================================================
 app.get('/api/health', (req, res) => {
   const db = getDB();
   const health = {
@@ -230,7 +227,6 @@ app.get('/api/health', (req, res) => {
   res.json(health);
 });
 
-// ==================== SIMPLE HEALTH CHECK FOR RENDER ====================
 app.get('/health', (req, res) => {
   res.status(200).send('OK');
 });
@@ -243,7 +239,6 @@ app.get('/ping', (req, res) => {
   res.status(200).send('pong');
 });
 
-// ==================== ROOT ROUTE ====================
 app.get('/', (req, res) => {
   res.json({
     status: 'ok',
@@ -263,7 +258,11 @@ app.get('/', (req, res) => {
   });
 });
 
-// ==================== 404 HANDLER ====================
+// ============================================================
+// 7. ERROR HANDLING - MUST BE AFTER ROUTES
+// ============================================================
+
+// 404 Handler
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -274,7 +273,7 @@ app.use((req, res) => {
   });
 });
 
-// ==================== GLOBAL ERROR HANDLER ====================
+// Global error handler
 app.use((err, req, res, next) => {
   console.error('❌ Server error:', {
     message: err.message,
@@ -286,7 +285,6 @@ app.use((err, req, res, next) => {
     params: req.params
   });
   
-  // Handle specific error types
   if (err.name === 'ValidationError') {
     return res.status(400).json({
       success: false,
@@ -318,7 +316,9 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ==================== START SERVER ====================
+// ============================================================
+// 8. START SERVER
+// ============================================================
 async function startServer() {
   try {
     console.log('🔄 Connecting to MongoDB...');
@@ -398,8 +398,7 @@ async function startServer() {
       console.log(`🌐 CORS allowed origins: ${allowedOrigins.join(', ')}`);
     });
 
-    // ==================== SERVER TIMEOUT SETTINGS ====================
-    server.timeout = 120000; // 2 minutes
+    server.timeout = 120000;
     server.keepAliveTimeout = 120000;
     server.headersTimeout = 120000;
 
@@ -408,13 +407,13 @@ async function startServer() {
   } catch (err) {
     console.error('❌ Failed to start server:', err.message);
     console.error('Stack:', err.stack);
-    // Don't exit - let the retry mechanism handle it
     throw err;
   }
 }
 
-// ==================== RETRY MECHANISM FOR STARTUP ====================
-// If server fails to start, retry instead of exiting
+// ============================================================
+// 9. RETRY MECHANISM
+// ============================================================
 async function startServerWithRetry() {
   let retries = 0;
   const maxRetries = 5;
@@ -422,7 +421,7 @@ async function startServerWithRetry() {
   while (retries < maxRetries) {
     try {
       await startServer();
-      return; // Success - exit the loop
+      return;
     } catch (err) {
       retries++;
       console.log(`❌ Start attempt ${retries} failed. Retrying in ${retries * 5} seconds...`);
@@ -434,7 +433,9 @@ async function startServerWithRetry() {
   process.exit(1);
 }
 
-// ==================== GRACEFUL SHUTDOWN ====================
+// ============================================================
+// 10. GRACEFUL SHUTDOWN
+// ============================================================
 let isShuttingDown = false;
 
 async function gracefulShutdown(signal) {
@@ -444,11 +445,8 @@ async function gracefulShutdown(signal) {
   console.log(`🛑 ${signal} received, starting graceful shutdown...`);
   
   try {
-    // Close database connections
     await closeDB();
     console.log('✅ Database connection closed');
-    
-    // Exit with success code
     console.log('👋 Shutdown complete');
     process.exit(0);
   } catch (err) {
@@ -457,44 +455,22 @@ async function gracefulShutdown(signal) {
   }
 }
 
-// Handle shutdown signals
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-// ==================== UNCAUGHT EXCEPTION HANDLING ====================
 process.on('uncaughtException', (err) => {
   console.error('❌ Uncaught Exception:', err.message);
   console.error('Stack:', err.stack);
-  
-  // Log to file if possible
-  try {
-    const fs = require('fs');
-    const log = `${new Date().toISOString()} - ${err.message}\n${err.stack}\n\n`;
-    fs.appendFileSync('./error.log', log);
-  } catch (e) {
-    // Ignore
-  }
-  
-  // Don't exit - keep running
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('❌ Unhandled Rejection at:', promise);
   console.error('Reason:', reason);
-  
-  // Log to file if possible
-  try {
-    const fs = require('fs');
-    const log = `${new Date().toISOString()} - Unhandled Rejection: ${reason}\n${promise}\n\n`;
-    fs.appendFileSync('./error.log', log);
-  } catch (e) {
-    // Ignore
-  }
-  
-  // Don't exit - keep running
 });
 
-// ==================== START THE SERVER WITH RETRY ====================
+// ============================================================
+// 11. START
+// ============================================================
 startServerWithRetry();
 
 module.exports = app;
