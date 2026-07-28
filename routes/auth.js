@@ -157,7 +157,7 @@ function publicCustomer(customer) {
 }
 
 /* ============================================================
-   GOOGLE STRATEGY - Fixed to handle existing email accounts
+   GOOGLE STRATEGY - With deleted check
    ============================================================ */
 if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
   passport.use(new GoogleStrategy({
@@ -178,6 +178,12 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
           email: email.toLowerCase() 
         });
 
+        // ✅ Check if user exists but is deleted
+        if (user && user.deleted === true) {
+          console.log(`🚫 Deleted Google user tried to login: ${email}`);
+          return done(new Error('Account has been deactivated'), null);
+        }
+
         if (!user) {
           // NEW USER - create with Google ID but NO PIN
           const newUser = {
@@ -192,6 +198,7 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
             },
             authMethod: 'google',
             googleCompleted: false,
+            deleted: false, // ✅ Add deleted flag
             createdAt: new Date(),
             updatedAt: new Date(),
             lastLoginAt: new Date(),
@@ -271,6 +278,18 @@ router.post('/send-email-otp', otpLimiter, [
   if (!db) return dbUnavailable(res);
 
   try {
+    // ✅ Check if email belongs to a deleted account
+    const deletedUser = await db.collection('customers').findOne({ 
+      email, 
+      deleted: true 
+    });
+    if (deletedUser) {
+      return res.status(403).json({
+        success: false,
+        message: 'This account has been deactivated. Please contact support.'
+      });
+    }
+
     const cooldown = await checkOtpCooldown(db, email, OTP_PURPOSE.REGISTER);
     if (!cooldown.allowed) {
       return res.status(429).json({ success: false, message: cooldown.message });
@@ -312,16 +331,24 @@ router.post('/register', [
   if (!db) return dbUnavailable(res);
 
   try {
-    const otpResult = await verifyAndConsumeOTP(db, email, OTP_PURPOSE.REGISTER, otp);
-    if (!otpResult.ok) return res.status(otpResult.status).json({ success: false, message: otpResult.message });
-
+    // ✅ Check if email is already registered (including deleted)
     const existingUser = await db.collection('customers').findOne({
       $or: [{ email }, { phone: formattedPhone }]
     });
 
     if (existingUser) {
+      // ✅ If deleted, return specific message
+      if (existingUser.deleted === true) {
+        return res.status(403).json({
+          success: false,
+          message: 'This account has been deactivated. Please contact support.'
+        });
+      }
       return res.status(409).json({ success: false, message: 'Email or phone already registered. Please login.' });
     }
+
+    const otpResult = await verifyAndConsumeOTP(db, email, OTP_PURPOSE.REGISTER, otp);
+    if (!otpResult.ok) return res.status(otpResult.status).json({ success: false, message: otpResult.message });
 
     const hashedPin = await bcrypt.hash(pin, BCRYPT_ROUNDS);
 
@@ -332,6 +359,7 @@ router.post('/register', [
       pin: hashedPin,
       authMethod: 'email',
       googleCompleted: false,
+      deleted: false, // ✅ Add deleted flag
       createdAt: new Date(),
       updatedAt: new Date(),
       lastLoginAt: null,
@@ -377,6 +405,11 @@ router.get('/google/callback',
       
       if (!freshUser) {
         return res.redirect('/login?error=User not found');
+      }
+
+      // ✅ Check if user is deleted
+      if (freshUser.deleted === true) {
+        return res.redirect('/login?error=Account deactivated');
       }
       
       const token = generateToken(freshUser._id.toString(), 'customer');
@@ -447,6 +480,14 @@ router.post('/complete-google-registration', [
 
     let user = await db.collection('customers').findOne({ email });
 
+    // ✅ Check if user is deleted
+    if (user && user.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'This account has been deactivated. Please contact support.'
+      });
+    }
+
     if (user && user.pin) {
       return res.status(409).json({
         success: false,
@@ -485,6 +526,7 @@ router.post('/complete-google-registration', [
         googleId: payload.sub,
         authMethod: 'google',
         googleCompleted: true,
+        deleted: false, // ✅ Add deleted flag
         createdAt: now,
         updatedAt: now,
         lastLoginAt: now,
@@ -526,8 +568,26 @@ router.post('/check-email', [
   if (!db) return dbUnavailable(res);
 
   try {
-    const existingUser = await db.collection('customers').findOne({ email }, { projection: { _id: 1 } });
-    res.json({ success: true, exists: !!existingUser });
+    const existingUser = await db.collection('customers').findOne({ 
+      email 
+    }, { 
+      projection: { _id: 1, deleted: 1 } 
+    });
+    
+    // ✅ If user exists but is deleted, return exists: true but with a flag
+    if (existingUser) {
+      if (existingUser.deleted === true) {
+        return res.json({ 
+          success: true, 
+          exists: true, 
+          deleted: true,
+          message: 'Account has been deactivated' 
+        });
+      }
+      return res.json({ success: true, exists: true, deleted: false });
+    }
+    
+    res.json({ success: true, exists: false });
   } catch (err) {
     console.error('❌ Check email error:', err);
     res.status(500).json({ success: false, message: 'Failed to check email' });
@@ -565,7 +625,7 @@ router.post('/check-user', [
 
     const existingUser = await db.collection('customers').findOne(
       { $or: query },
-      { projection: { email: 1, phone: 1, name: 1 } }
+      { projection: { email: 1, phone: 1, name: 1, deleted: 1 } }
     );
 
     if (existingUser) {
@@ -574,9 +634,22 @@ router.post('/check-user', [
       if (formattedPhone && existingUser.phone === formattedPhone) fields.push('phone');
       if (name && existingUser.name === name.trim()) fields.push('name');
 
+      // ✅ Check if deleted
+      if (existingUser.deleted === true) {
+        return res.json({
+          success: true,
+          exists: true,
+          deleted: true,
+          field: fields.length === 1 ? fields[0] : 'multiple',
+          fields,
+          message: 'Account has been deactivated'
+        });
+      }
+
       return res.json({
         success: true,
         exists: true,
+        deleted: false,
         field: fields.length === 1 ? fields[0] : 'multiple',
         fields,
         message: `User already exists with ${fields.join(', ')}`
@@ -591,7 +664,7 @@ router.post('/check-user', [
 });
 
 /* ============================================================
-   LOGIN FLOW
+   LOGIN FLOW - WITH DELETED CHECK
    ============================================================ */
 
 router.post('/login', loginLimiter, [
@@ -612,6 +685,14 @@ router.post('/login', loginLimiter, [
   try {
     const customer = await db.collection('customers').findOne({ email });
     if (!customer) return res.status(404).json({ success: false, message: 'Email not found' });
+
+    // ✅ Check if user is deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated. Please contact support.'
+      });
+    }
 
     if (!customer.pin) {
       return res.status(401).json({
@@ -663,6 +744,14 @@ router.post('/login-phone', loginLimiter, [
     const customer = await db.collection('customers').findOne({ phone: formattedPhone });
     if (!customer) return res.status(404).json({ success: false, message: 'Phone not found' });
 
+    // ✅ Check if user is deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated. Please contact support.'
+      });
+    }
+
     if (!customer.pin) {
       return res.status(401).json({
         success: false,
@@ -694,7 +783,7 @@ router.post('/login-phone', loginLimiter, [
 });
 
 /* ============================================================
-   PIN RESET FLOW
+   PIN RESET FLOW - WITH DELETED CHECK
    ============================================================ */
 
 router.post('/forgot-pin', forgotPinLimiter, [
@@ -711,6 +800,14 @@ router.post('/forgot-pin', forgotPinLimiter, [
     const customer = await db.collection('customers').findOne({ email });
     if (!customer) {
       return res.status(404).json({ success: false, message: 'No account found with this email' });
+    }
+
+    // ✅ Check if user is deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated. Please contact support.'
+      });
     }
 
     const cooldown = await checkOtpCooldown(db, email, OTP_PURPOSE.RESET_PIN);
@@ -751,6 +848,15 @@ router.post('/reset-pin', [
   if (!db) return dbUnavailable(res);
 
   try {
+    // ✅ Check if user is deleted
+    const customer = await db.collection('customers').findOne({ email });
+    if (customer && customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated. Please contact support.'
+      });
+    }
+
     const otpResult = await verifyAndConsumeOTP(db, email, OTP_PURPOSE.RESET_PIN, otp);
     if (!otpResult.ok) return res.status(otpResult.status).json({ success: false, message: otpResult.message });
 
@@ -808,6 +914,7 @@ router.get('/debug/db-check', async (req, res) => {
         authMethod: c.authMethod || 'email',
         hasPin: !!c.pin,
         googleCompleted: c.googleCompleted || false,
+        deleted: c.deleted || false, // ✅ Added deleted field
         createdAt: c.createdAt
       })),
       timestamp: new Date().toISOString()

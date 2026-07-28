@@ -27,6 +27,12 @@ function formatPhone(phone) {
   return cleaned;
 }
 
+// ==================== CHECK IF USER IS DELETED ====================
+function checkDeleted(customer) {
+  if (!customer) return { deleted: false };
+  return { deleted: customer.deleted === true };
+}
+
 // ==================== GET CURRENT CUSTOMER PROFILE ====================
 router.get('/me', requireCustomer, async (req, res) => {
   try {
@@ -46,6 +52,14 @@ router.get('/me', requireCustomer, async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Customer not found'
+      });
+    }
+
+    // ✅ Check if customer was soft deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated'
       });
     }
 
@@ -106,6 +120,14 @@ router.get('/phone/:phone', async (req, res) => {
       });
     }
 
+    // ✅ Check if customer was soft deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated'
+      });
+    }
+
     res.json({
       success: true,
       customer: {
@@ -155,6 +177,14 @@ router.get('/email/:email', async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Customer not found'
+      });
+    }
+
+    // ✅ Check if customer was soft deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated'
       });
     }
 
@@ -210,6 +240,26 @@ router.put('/me', requireCustomer, [
 
     const { name, phone, email, address } = req.body;
     const customerId = req.customer.userId;
+
+    // Check if customer exists and is not deleted
+    const existingCustomer = await db.collection('customers').findOne({
+      _id: new ObjectId(customerId)
+    });
+
+    if (!existingCustomer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Customer not found'
+      });
+    }
+
+    // ✅ Check if customer was soft deleted
+    if (existingCustomer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated'
+      });
+    }
 
     const updateData = {
       updatedAt: new Date()
@@ -329,6 +379,14 @@ router.put('/me/pin', requireCustomer, [
       });
     }
 
+    // ✅ Check if customer was soft deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated'
+      });
+    }
+
     // Check if customer has a PIN
     if (!customer.pin) {
       return res.status(400).json({
@@ -408,6 +466,14 @@ router.put('/me/set-pin', requireCustomer, [
       });
     }
 
+    // ✅ Check if customer was soft deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated'
+      });
+    }
+
     // Check if PIN already set
     if (customer.pin) {
       return res.status(400).json({
@@ -475,6 +541,14 @@ router.put('/me/favorites', requireCustomer, [
       });
     }
 
+    // ✅ Check if customer was soft deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated'
+      });
+    }
+
     const favorites = customer.favorites || [];
     const index = favorites.indexOf(productId);
 
@@ -525,6 +599,14 @@ router.get('/me/favorites', requireCustomer, async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Customer not found'
+      });
+    }
+
+    // ✅ Check if customer was soft deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated'
       });
     }
 
@@ -589,6 +671,14 @@ router.get('/me/orders', requireCustomer, async (req, res) => {
       });
     }
 
+    // ✅ Check if customer was soft deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated'
+      });
+    }
+
     const orders = await db.collection('orders')
       .find({
         $or: [
@@ -638,6 +728,14 @@ router.get('/me/orders/:orderId', requireCustomer, async (req, res) => {
       });
     }
 
+    // ✅ Check if customer was soft deleted
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated'
+      });
+    }
+
     const order = await db.collection('orders').findOne({
       order_number: orderId,
       $or: [
@@ -666,7 +764,7 @@ router.get('/me/orders/:orderId', requireCustomer, async (req, res) => {
   }
 });
 
-// ==================== DELETE CUSTOMER ACCOUNT ====================
+// ==================== DELETE CUSTOMER ACCOUNT (Soft Delete) ====================
 router.delete('/me', requireCustomer, async (req, res) => {
   try {
     const db = getDB();
@@ -691,6 +789,14 @@ router.delete('/me', requireCustomer, async (req, res) => {
       });
     }
 
+    // ✅ Check if already deleted
+    if (customer.deleted === true) {
+      return res.status(400).json({
+        success: false,
+        message: 'Account already deactivated'
+      });
+    }
+
     const pendingOrders = await db.collection('orders').countDocuments({
       $or: [
         { customer_email: customer.email },
@@ -706,14 +812,23 @@ router.delete('/me', requireCustomer, async (req, res) => {
       });
     }
 
-    await db.collection('customers').deleteOne({
-      _id: new ObjectId(customerId)
-    });
+    // ✅ SOFT DELETE - Mark as deleted so user cannot login
+    await db.collection('customers').updateOne(
+      { _id: new ObjectId(customerId) },
+      { 
+        $set: { 
+          deleted: true, 
+          deletedAt: new Date(),
+          updatedAt: new Date()
+        } 
+      }
+    );
 
     res.json({
       success: true,
       message: 'Account deleted successfully'
     });
+
   } catch (err) {
     console.error('Error deleting customer:', err);
     res.status(500).json({
@@ -755,6 +870,8 @@ router.get('/debug/db-check', async (req, res) => {
         name: c.name,
         phone: c.phone,
         googleId: c.googleId || null,
+        deleted: c.deleted || false,
+        deletedAt: c.deletedAt || null,
         createdAt: c.createdAt
       })),
       stats: stats ? {
