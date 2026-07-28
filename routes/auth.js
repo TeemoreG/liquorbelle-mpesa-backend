@@ -157,7 +157,7 @@ function publicCustomer(customer) {
 }
 
 /* ============================================================
-   GOOGLE STRATEGY - With deleted check
+   GOOGLE STRATEGY - FIXED: Link accounts if email exists
    ============================================================ */
 if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
   passport.use(new GoogleStrategy({
@@ -184,8 +184,52 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
           return done(new Error('Account has been deactivated'), null);
         }
 
+        // ✅ If user exists with email but NO Google ID → LINK the accounts
+        if (user && !user.googleId) {
+          console.log(`🔗 Linking Google account to existing user: ${email}`);
+          await db.collection('customers').updateOne(
+            { _id: user._id },
+            { 
+              $set: { 
+                googleId: profile.id,
+                googleData: {
+                  accessToken: accessToken,
+                  refreshToken: refreshToken,
+                  profile: profile._json
+                },
+                authMethod: 'google',
+                updatedAt: new Date(),
+                lastLoginAt: new Date()
+              } 
+            }
+          );
+          user = await db.collection('customers').findOne({ _id: user._id });
+          console.log(`✅ Google account LINKED to existing user: ${email}`);
+          return done(null, user);
+        }
+
+        // ✅ If user exists and has Google ID → normal login
+        if (user && user.googleId) {
+          await db.collection('customers').updateOne(
+            { _id: user._id },
+            { 
+              $set: { 
+                lastLoginAt: new Date(),
+                googleData: {
+                  accessToken: accessToken,
+                  refreshToken: refreshToken,
+                  profile: profile._json
+                }
+              } 
+            }
+          );
+          user = await db.collection('customers').findOne({ _id: user._id });
+          console.log(`✅ Google login for existing linked account: ${email}`);
+          return done(null, user);
+        }
+
+        // ✅ Brand new user - create with Google ID
         if (!user) {
-          // NEW USER - create with Google ID but NO PIN
           const newUser = {
             email: email.toLowerCase(),
             name: profile.displayName || profile.name?.givenName || 'Google User',
@@ -198,7 +242,7 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
             },
             authMethod: 'google',
             googleCompleted: false,
-            deleted: false, // ✅ Add deleted flag
+            deleted: false,
             createdAt: new Date(),
             updatedAt: new Date(),
             lastLoginAt: new Date(),
@@ -209,38 +253,10 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
           const result = await db.collection('customers').insertOne(newUser);
           user = { ...newUser, _id: result.insertedId };
           console.log(`✅ New Google user registered: ${email} (no PIN yet)`);
-        } else {
-          // EXISTING USER - update Google info
-          const updateData = {
-            googleId: profile.id,
-            googleData: {
-              accessToken: accessToken,
-              refreshToken: refreshToken,
-              profile: profile._json
-            },
-            updatedAt: new Date(),
-            lastLoginAt: new Date()
-          };
-          
-          // If user exists but has no PIN, they haven't completed registration
-          if (!user.pin) {
-            updateData.googleCompleted = false;
-            console.log(`🔄 Google login for incomplete account: ${email}`);
-          } else {
-            updateData.googleCompleted = true;
-            console.log(`✅ Google login for existing account: ${email}`);
-          }
-          
-          await db.collection('customers').updateOne(
-            { _id: user._id },
-            { $set: updateData }
-          );
-          
-          user = await db.collection('customers').findOne({ _id: user._id });
-          console.log(`✅ Google user logged in: ${email}`);
         }
 
         return done(null, user);
+
       } catch (err) {
         console.error('❌ Google auth error:', err);
         return done(err, null);
@@ -359,7 +375,7 @@ router.post('/register', [
       pin: hashedPin,
       authMethod: 'email',
       googleCompleted: false,
-      deleted: false, // ✅ Add deleted flag
+      deleted: false,
       createdAt: new Date(),
       updatedAt: new Date(),
       lastLoginAt: null,
@@ -419,8 +435,14 @@ router.get('/google/callback',
       const hasPin = !!freshUser.pin;
       const isNew = !hasPin;
       
+      // ✅ Check if this is a newly linked account (user existed but no googleId before)
+      // If googleId was just added and googleCompleted is false, it's a linked account
+      const isLinked = freshUser.googleId && freshUser.googleCompleted === false && freshUser.pin;
+      
+      console.log(`📊 Google callback: email=${freshUser.email}, hasPin=${hasPin}, isNew=${isNew}, isLinked=${isLinked}`);
+      
       res.redirect(
-        `${frontendUrl}/index.html?google_auth=success&token=${token}&email=${encodeURIComponent(freshUser.email)}&name=${encodeURIComponent(freshUser.name)}&phone=${encodeURIComponent(freshUser.phone || '')}&is_new=${isNew}`
+        `${frontendUrl}/index.html?google_auth=success&token=${token}&email=${encodeURIComponent(freshUser.email)}&name=${encodeURIComponent(freshUser.name)}&phone=${encodeURIComponent(freshUser.phone || '')}&is_new=${isNew}&is_linked=${isLinked}`
       );
       
     } catch (err) {
@@ -516,6 +538,7 @@ router.post('/complete-google-registration', [
       );
       
       user = await db.collection('customers').findOne({ _id: user._id });
+      console.log(`✅ PIN set for existing user (${user.authMethod}): ${email}`);
     } else {
       // Brand new user - create with PIN
       const newUser = {
@@ -526,7 +549,7 @@ router.post('/complete-google-registration', [
         googleId: payload.sub,
         authMethod: 'google',
         googleCompleted: true,
-        deleted: false, // ✅ Add deleted flag
+        deleted: false,
         createdAt: now,
         updatedAt: now,
         lastLoginAt: now,
@@ -535,7 +558,7 @@ router.post('/complete-google-registration', [
       };
       const result = await db.collection('customers').insertOne(newUser);
       user = { ...newUser, _id: result.insertedId };
-      console.log(`✅ Google user registered with PIN: ${email}`);
+      console.log(`✅ New Google user registered with PIN: ${email}`);
     }
 
     const newToken = generateToken(user._id.toString(), 'customer');
@@ -914,7 +937,8 @@ router.get('/debug/db-check', async (req, res) => {
         authMethod: c.authMethod || 'email',
         hasPin: !!c.pin,
         googleCompleted: c.googleCompleted || false,
-        deleted: c.deleted || false, // ✅ Added deleted field
+        googleId: c.googleId || null,
+        deleted: c.deleted || false,
         createdAt: c.createdAt
       })),
       timestamp: new Date().toISOString()
