@@ -1,7 +1,9 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const bcrypt = require('bcryptjs');
-const { OAuth2Client } = require('google-auth-library'); // npm install google-auth-library
+const { OAuth2Client } = require('google-auth-library');
+const passport = require('passport');
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const { getDB } = require('../config/database');
 const { otpLimiter, loginLimiter, forgotPinLimiter } = require('../config/rateLimits');
 const { sendOTPEmail } = require('../utils/email');
@@ -19,15 +21,11 @@ const OTP_EXPIRY_MINUTES = 10;
 const OTP_RESEND_COOLDOWN_MINUTES = 2;
 const MAX_OTP_ATTEMPTS = 5;
 
-// Two distinct OTP "purposes" share the same collection — always filter by
-// BOTH email AND purpose so registration OTPs and reset-PIN OTPs can never
-// collide or be swapped for one another.
 const OTP_PURPOSE = {
   REGISTER: 'register',
   RESET_PIN: 'reset_pin'
 };
 
-// Set GOOGLE_CLIENT_ID in your environment. Required to verify Google ID tokens.
 const googleClient = process.env.GOOGLE_CLIENT_ID
   ? new OAuth2Client(process.env.GOOGLE_CLIENT_ID)
   : null;
@@ -38,18 +36,15 @@ const googleClient = process.env.GOOGLE_CLIENT_ID
 function isValidPhone(phone) {
   if (!phone) return false;
   const cleaned = phone.replace(/\D/g, '');
-
   if (cleaned.length === 10 && (cleaned.startsWith('07') || cleaned.startsWith('01'))) return true;
   if (cleaned.length === 9 && (cleaned.startsWith('7') || cleaned.startsWith('1'))) return true;
   if (cleaned.length === 12 && cleaned.startsWith('254')) return true;
-
   return false;
 }
 
 function formatPhone(phone) {
   if (!phone) return '';
   const cleaned = phone.replace(/\D/g, '');
-
   if (cleaned.length === 12 && cleaned.startsWith('254')) return cleaned;
   if (cleaned.length === 10 && (cleaned.startsWith('07') || cleaned.startsWith('01'))) {
     return '254' + cleaned.slice(1);
@@ -75,17 +70,13 @@ function normalizeEmail(email) {
 }
 
 /* ============================================================
-   HELPERS — OTP lifecycle (shared by register + forgot-pin flows)
+   HELPERS — OTP lifecycle
    ============================================================ */
-
-// Returns { allowed: boolean, message?: string } — enforces the resend cooldown.
 async function checkOtpCooldown(db, email, purpose) {
   const existing = await db.collection('otps').findOne({ email, purpose });
   if (!existing) return { allowed: true };
-
   const isExpired = new Date() > new Date(existing.expires_at);
   const ageMinutes = (Date.now() - new Date(existing.created_at).getTime()) / 1000 / 60;
-
   if (!isExpired && ageMinutes < OTP_RESEND_COOLDOWN_MINUTES) {
     return {
       allowed: false,
@@ -113,19 +104,15 @@ async function issueOTP(db, email, purpose) {
   return otp;
 }
 
-// Verifies and consumes (deletes) an OTP. Returns { ok, status, message }.
 async function verifyAndConsumeOTP(db, email, purpose, submittedOtp) {
   const stored = await db.collection('otps').findOne({ email, purpose });
-
   if (!stored) {
     return { ok: false, status: 401, message: 'No OTP found. Please request a new one.' };
   }
-
   if (isOTPExpired(stored.created_at, OTP_EXPIRY_MINUTES)) {
     await db.collection('otps').deleteOne({ email, purpose });
     return { ok: false, status: 401, message: 'OTP expired. Please request a new one.' };
   }
-
   if (stored.otp !== submittedOtp) {
     const attempts = (stored.attempts || 0) + 1;
     if (attempts >= MAX_OTP_ATTEMPTS) {
@@ -139,7 +126,6 @@ async function verifyAndConsumeOTP(db, email, purpose, submittedOtp) {
       message: `Invalid OTP. ${MAX_OTP_ATTEMPTS - attempts} attempts remaining.`
     };
   }
-
   await db.collection('otps').deleteOne({ email, purpose });
   return { ok: true };
 }
@@ -163,16 +149,117 @@ function publicCustomer(customer) {
     phone: customer.phone,
     phoneDisplay: formatPhoneForDisplay(customer.phone),
     authMethod: customer.authMethod || 'email',
+    hasPin: !!customer.pin,
+    googleCompleted: customer.googleCompleted || false,
     createdAt: customer.createdAt,
     lastLoginAt: customer.lastLoginAt
   };
 }
 
 /* ============================================================
+   GOOGLE STRATEGY - Fixed to handle existing email accounts
+   ============================================================ */
+if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+  passport.use(new GoogleStrategy({
+      clientID: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      callbackURL: process.env.GOOGLE_CALLBACK_URL || '/api/auth/google/callback'
+    },
+    async function(accessToken, refreshToken, profile, done) {
+      try {
+        const db = getDB();
+        const email = profile.emails?.[0]?.value;
+        
+        if (!email) {
+          return done(new Error('No email from Google'), null);
+        }
+
+        let user = await db.collection('customers').findOne({ 
+          email: email.toLowerCase() 
+        });
+
+        if (!user) {
+          // NEW USER - create with Google ID but NO PIN
+          const newUser = {
+            email: email.toLowerCase(),
+            name: profile.displayName || profile.name?.givenName || 'Google User',
+            phone: '',
+            googleId: profile.id,
+            googleData: {
+              accessToken: accessToken,
+              refreshToken: refreshToken,
+              profile: profile._json
+            },
+            authMethod: 'google',
+            googleCompleted: false,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            lastLoginAt: new Date(),
+            orderHistory: [],
+            favorites: []
+          };
+          
+          const result = await db.collection('customers').insertOne(newUser);
+          user = { ...newUser, _id: result.insertedId };
+          console.log(`✅ New Google user registered: ${email} (no PIN yet)`);
+        } else {
+          // EXISTING USER - update Google info
+          const updateData = {
+            googleId: profile.id,
+            googleData: {
+              accessToken: accessToken,
+              refreshToken: refreshToken,
+              profile: profile._json
+            },
+            updatedAt: new Date(),
+            lastLoginAt: new Date()
+          };
+          
+          // If user exists but has no PIN, they haven't completed registration
+          if (!user.pin) {
+            updateData.googleCompleted = false;
+            console.log(`🔄 Google login for incomplete account: ${email}`);
+          } else {
+            updateData.googleCompleted = true;
+            console.log(`✅ Google login for existing account: ${email}`);
+          }
+          
+          await db.collection('customers').updateOne(
+            { _id: user._id },
+            { $set: updateData }
+          );
+          
+          user = await db.collection('customers').findOne({ _id: user._id });
+          console.log(`✅ Google user logged in: ${email}`);
+        }
+
+        return done(null, user);
+      } catch (err) {
+        console.error('❌ Google auth error:', err);
+        return done(err, null);
+      }
+    }
+  ));
+
+  passport.serializeUser((user, done) => {
+    done(null, user._id);
+  });
+
+  passport.deserializeUser(async (id, done) => {
+    try {
+      const db = getDB();
+      const user = await db.collection('customers').findOne({ _id: id });
+      done(null, user);
+    } catch (err) {
+      done(err, null);
+    }
+  });
+}
+
+/* ============================================================
    REGISTRATION FLOW (Email OTP -> PIN account)
    ============================================================ */
 
-// ---- Step 1: request an OTP for a NEW account ----
 router.post('/send-email-otp', otpLimiter, [
   body('email').isEmail().withMessage('Valid email required')
 ], async (req, res) => {
@@ -204,7 +291,6 @@ router.post('/send-email-otp', otpLimiter, [
   }
 });
 
-// ---- Step 2: verify OTP + create account with PIN ----
 router.post('/register', [
   body('email').isEmail().withMessage('Valid email required'),
   body('name').notEmpty().withMessage('Name required').isLength({ min: 2, max: 100 }),
@@ -271,6 +357,161 @@ router.post('/register', [
 });
 
 /* ============================================================
+   GOOGLE AUTH ROUTES
+   ============================================================ */
+
+router.get('/google',
+  passport.authenticate('google', { scope: ['profile', 'email'] })
+);
+
+router.get('/google/callback',
+  passport.authenticate('google', { failureRedirect: '/login' }),
+  async function(req, res) {
+    try {
+      const user = req.user;
+      const db = getDB();
+      
+      const freshUser = await db.collection('customers').findOne({ 
+        _id: user._id 
+      });
+      
+      if (!freshUser) {
+        return res.redirect('/login?error=User not found');
+      }
+      
+      const token = generateToken(freshUser._id.toString(), 'customer');
+      const frontendUrl = process.env.FRONTEND_URL || 'https://teemoreg.github.io/liquorbelle';
+      
+      // Check if user has PIN - if not, they need to complete registration
+      const hasPin = !!freshUser.pin;
+      const isNew = !hasPin;
+      
+      res.redirect(
+        `${frontendUrl}/index.html?google_auth=success&token=${token}&email=${encodeURIComponent(freshUser.email)}&name=${encodeURIComponent(freshUser.name)}&phone=${encodeURIComponent(freshUser.phone || '')}&is_new=${isNew}`
+      );
+      
+    } catch (err) {
+      console.error('❌ Google callback error:', err);
+      res.redirect('/login?error=Google login failed');
+    }
+  }
+);
+
+/* ============================================================
+   COMPLETE GOOGLE REGISTRATION (Set PIN for Google users)
+   ============================================================ */
+
+router.post('/complete-google-registration', [
+  body('token').notEmpty().withMessage('Google token required'),
+  body('name').notEmpty().withMessage('Name required').isLength({ min: 2, max: 100 }),
+  body('phone').notEmpty().withMessage('Phone number required')
+    .custom((value) => isValidPhone(value)).withMessage('Invalid phone number format (e.g., 0712345678)'),
+  body('pin').notEmpty().withMessage('PIN required')
+    .isLength({ min: 4, max: 4 }).withMessage('PIN must be exactly 4 digits')
+    .isNumeric().withMessage('PIN must be numeric')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return validationFailed(res, errors);
+
+  if (!googleClient) {
+    console.error('❌ GOOGLE_CLIENT_ID not configured');
+    return res.status(500).json({ success: false, message: 'Google sign-in not configured' });
+  }
+
+  const { token, name, phone, pin } = req.body;
+  const db = getDB();
+  if (!db) return dbUnavailable(res);
+
+  try {
+    let payload;
+    try {
+      const ticket = await googleClient.verifyIdToken({
+        idToken: token,
+        audience: process.env.GOOGLE_CLIENT_ID
+      });
+      payload = ticket.getPayload();
+    } catch (verifyErr) {
+      console.error('❌ Google token verification failed:', verifyErr.message);
+      return res.status(401).json({ success: false, message: 'Invalid or expired Google token' });
+    }
+
+    if (!payload || !payload.email) {
+      return res.status(401).json({ success: false, message: 'Google token did not contain a valid email' });
+    }
+    if (payload.email_verified === false) {
+      return res.status(401).json({ success: false, message: 'Google email is not verified' });
+    }
+
+    const email = normalizeEmail(payload.email);
+    const formattedPhone = formatPhone(phone);
+
+    let user = await db.collection('customers').findOne({ email });
+
+    if (user && user.pin) {
+      return res.status(409).json({
+        success: false,
+        message: 'Account already has a PIN set. Please login normally.'
+      });
+    }
+
+    const hashedPin = await bcrypt.hash(pin, BCRYPT_ROUNDS);
+    const now = new Date();
+
+    if (user) {
+      // User exists but no PIN - set PIN
+      await db.collection('customers').updateOne(
+        { _id: user._id },
+        {
+          $set: {
+            pin: hashedPin,
+            phone: formattedPhone,
+            name: name.trim(),
+            authMethod: user.googleId ? 'google' : 'email',
+            googleCompleted: true,
+            updatedAt: now,
+            lastLoginAt: now
+          }
+        }
+      );
+      
+      user = await db.collection('customers').findOne({ _id: user._id });
+    } else {
+      // Brand new user - create with PIN
+      const newUser = {
+        email,
+        name: name.trim(),
+        phone: formattedPhone,
+        pin: hashedPin,
+        googleId: payload.sub,
+        authMethod: 'google',
+        googleCompleted: true,
+        createdAt: now,
+        updatedAt: now,
+        lastLoginAt: now,
+        orderHistory: [],
+        favorites: []
+      };
+      const result = await db.collection('customers').insertOne(newUser);
+      user = { ...newUser, _id: result.insertedId };
+      console.log(`✅ Google user registered with PIN: ${email}`);
+    }
+
+    const newToken = generateToken(user._id.toString(), 'customer');
+
+    res.json({
+      success: true,
+      message: user.pin ? 'Account updated successfully' : 'Account created successfully',
+      token: newToken,
+      customer: publicCustomer(user)
+    });
+
+  } catch (err) {
+    console.error('❌ Complete Google registration error:', err);
+    res.status(500).json({ success: false, message: 'Failed to complete registration' });
+  }
+});
+
+/* ============================================================
    LOOKUPS — Check existence before signup
    ============================================================ */
 
@@ -294,9 +535,9 @@ router.post('/check-email', [
 });
 
 router.post('/check-user', [
-  body('name').optional().isLength({ min: 2, max: 100 }).withMessage('Name must be between 2 and 100 characters'),
-  body('email').optional().isEmail().withMessage('Valid email required'),
-  body('phone').optional().custom((value) => isValidPhone(value)).withMessage('Invalid phone number')
+  body('name').optional().isLength({ min: 2, max: 100 }),
+  body('email').optional().isEmail(),
+  body('phone').optional().custom((value) => isValidPhone(value))
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return validationFailed(res, errors);
@@ -350,9 +591,7 @@ router.post('/check-user', [
 });
 
 /* ============================================================
-   LOGIN FLOW (existing account -> email/phone + PIN)
-   These are LOGIN endpoints only — they never create an account.
-   Use /register or /complete-google-registration to sign up.
+   LOGIN FLOW
    ============================================================ */
 
 router.post('/login', loginLimiter, [
@@ -455,7 +694,7 @@ router.post('/login-phone', loginLimiter, [
 });
 
 /* ============================================================
-   PIN RESET FLOW (forgot PIN -> email OTP -> new PIN)
+   PIN RESET FLOW
    ============================================================ */
 
 router.post('/forgot-pin', forgotPinLimiter, [
@@ -535,139 +774,7 @@ router.post('/reset-pin', [
 });
 
 /* ============================================================
-   GOOGLE SIGN-UP FLOW
-   Frontend must send a Google ID token (from Google Identity
-   Services / passport-google-oauth's idToken) — it is verified
-   server-side below before any account is created or modified.
-   ============================================================ */
-
-router.post('/complete-google-registration', [
-  body('token').notEmpty().withMessage('Google token required'),
-  body('name').notEmpty().withMessage('Name required').isLength({ min: 2, max: 100 }),
-  body('phone').notEmpty().withMessage('Phone number required')
-    .custom((value) => isValidPhone(value)).withMessage('Invalid phone number format (e.g., 0712345678)'),
-  body('pin').notEmpty().withMessage('PIN required')
-    .isLength({ min: 4, max: 4 }).withMessage('PIN must be exactly 4 digits')
-    .isNumeric().withMessage('PIN must be numeric')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return validationFailed(res, errors);
-
-  if (!googleClient) {
-    console.error('❌ GOOGLE_CLIENT_ID not configured — cannot verify Google tokens');
-    return res.status(500).json({ success: false, message: 'Google sign-in is not configured on this server' });
-  }
-
-  const { token, name, phone, pin } = req.body;
-  const db = getDB();
-  if (!db) return dbUnavailable(res);
-
-  try {
-    // ===== VERIFY GOOGLE TOKEN (never trust a client-supplied email) =====
-    let payload;
-    try {
-      const ticket = await googleClient.verifyIdToken({
-        idToken: token,
-        audience: process.env.GOOGLE_CLIENT_ID
-      });
-      payload = ticket.getPayload();
-    } catch (verifyErr) {
-      console.error('❌ Google token verification failed:', verifyErr.message);
-      return res.status(401).json({ success: false, message: 'Invalid or expired Google token' });
-    }
-
-    if (!payload || !payload.email) {
-      return res.status(401).json({ success: false, message: 'Google token did not contain a valid email' });
-    }
-    if (payload.email_verified === false) {
-      return res.status(401).json({ success: false, message: 'Google email is not verified' });
-    }
-
-    const email = normalizeEmail(payload.email); // trusted email, straight from Google
-    const formattedPhone = formatPhone(phone);
-
-    const existingUser = await db.collection('customers').findOne({
-      $or: [{ email }, { phone: formattedPhone }]
-    });
-
-    if (existingUser) {
-      // Only allowed to "complete" an account that has no PIN yet
-      // and that belongs to the same Google-verified email.
-      if (existingUser.pin) {
-        return res.status(409).json({ success: false, message: 'Email or phone already registered' });
-      }
-      if (existingUser.email !== email) {
-        return res.status(409).json({ success: false, message: 'Phone number already registered to a different account' });
-      }
-
-      const hashedPin = await bcrypt.hash(pin, BCRYPT_ROUNDS);
-      const lastLoginAt = new Date();
-
-      await db.collection('customers').updateOne(
-        { _id: existingUser._id },
-        {
-          $set: {
-            pin: hashedPin,
-            phone: formattedPhone,
-            name: name.trim(),
-            authMethod: 'google',
-            googleCompleted: true,
-            updatedAt: lastLoginAt,
-            lastLoginAt
-          }
-        }
-      );
-
-      const newToken = generateToken(existingUser._id.toString(), 'customer');
-
-      console.log(`✅ Google user PIN set: ${email}`);
-      return res.json({
-        success: true,
-        message: 'PIN set successfully',
-        token: newToken,
-        customer: publicCustomer({ ...existingUser, name: name.trim(), phone: formattedPhone, lastLoginAt })
-      });
-    }
-
-    // ===== Brand-new Google-linked account =====
-    const hashedPin = await bcrypt.hash(pin, BCRYPT_ROUNDS);
-    const now = new Date();
-
-    const customer = {
-      email,
-      name: name.trim(),
-      phone: formattedPhone,
-      pin: hashedPin,
-      authMethod: 'google',
-      googleCompleted: true,
-      googleId: payload.sub,
-      createdAt: now,
-      updatedAt: now,
-      lastLoginAt: now,
-      orderHistory: [],
-      favorites: []
-    };
-
-    const result = await db.collection('customers').insertOne(customer);
-    const newToken = generateToken(result.insertedId.toString(), 'customer');
-
-    console.log(`✅ Google user registered with PIN: ${email} | ${formattedPhone}`);
-
-    res.json({
-      success: true,
-      message: 'Account created successfully',
-      token: newToken,
-      customer: publicCustomer({ ...customer, _id: result.insertedId })
-    });
-  } catch (err) {
-    console.error('❌ Complete Google registration error:', err);
-    res.status(500).json({ success: false, message: 'Failed to complete registration' });
-  }
-});
-
-/* ============================================================
-   DEBUG (secured via header/query token — leave DEBUG_TOKEN unset
-   in production to disable this route entirely)
+   DEBUG
    ============================================================ */
 
 router.get('/debug/db-check', async (req, res) => {
@@ -699,6 +806,8 @@ router.get('/debug/db-check', async (req, res) => {
         name: c.name,
         phone: c.phone,
         authMethod: c.authMethod || 'email',
+        hasPin: !!c.pin,
+        googleCompleted: c.googleCompleted || false,
         createdAt: c.createdAt
       })),
       timestamp: new Date().toISOString()
