@@ -1,8 +1,8 @@
 // ==================== EMAIL SERVICE (Brevo) ====================
-const axios = require('axios'); // ← ONLY ONCE
+const axios = require('axios');
 
 // ==================== CONFIG ====================
-const BREVO_API_KEY = process.env.BREVO_API_KEY; // ← ONLY ONCE
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
 const SENDER_EMAIL = 'timblax0@gmail.com';
 const SENDER_NAME = 'LiquorBelle';
 
@@ -25,23 +25,31 @@ async function sendBrevoEmail(to, subject, htmlContent, params = {}) {
     return { success: false, error: 'API key missing' };
   }
 
+  if (!to) {
+    console.error('❌ Missing recipient email');
+    return { success: false, error: 'Missing recipient email' };
+  }
+
   try {
     const response = await axios.post(
       'https://api.brevo.com/v3/smtp/email',
       {
         sender: { name: SENDER_NAME, email: SENDER_EMAIL },
-        to: Array.isArray(to) ? to : [{ email: to }],
+        to: Array.isArray(to) ? to.map(t => typeof t === 'string' ? { email: t } : t) : [{ email: to }],
         subject: subject,
         htmlContent: htmlContent,
         params: params
       },
       {
-        headers: { 'api-key': BREVO_API_KEY, 'Content-Type': 'application/json' },
+        headers: { 
+          'api-key': BREVO_API_KEY, 
+          'Content-Type': 'application/json' 
+        },
         timeout: 10000
       }
     );
 
-    console.log(`✅ Email sent to ${Array.isArray(to) ? to.map(t => t.email).join(', ') : to}`);
+    console.log(`✅ Email sent to ${Array.isArray(to) ? to.map(t => t.email || t).join(', ') : to}`);
     return { success: true, data: response.data };
   } catch (err) {
     console.error('❌ Email error:', err.response?.data?.message || err.message);
@@ -118,19 +126,9 @@ async function sendOTPEmail(email, otp, type = 'verification', name = 'Customer'
 </body>
 </html>`;
 
-    await axios.post(
-      'https://api.brevo.com/v3/smtp/email',
-      {
-        sender: { name: SENDER_NAME, email: SENDER_EMAIL },
-        to: [{ email }],
-        subject: config.subject,
-        htmlContent: html
-      },
-      { headers: { 'api-key': BREVO_API_KEY, 'Content-Type': 'application/json' }, timeout: 10000 }
-    );
-
+    const result = await sendBrevoEmail(email, config.subject, html);
     console.log(`✅ OTP email sent to ${email} (${type})`);
-    return { success: true };
+    return result;
 
   } catch (err) {
     console.error('❌ OTP email error:', err.response?.data?.message || err.message);
@@ -165,7 +163,7 @@ async function sendMpesaOrderReceivedEmail(orderData) {
       return { success: false, error: 'Missing required fields' };
     }
 
-    const deliveryText = delivery === 0 ? 'FREE' : `KES ${delivery.toLocaleString()}`;
+    const deliveryText = delivery === 0 ? 'FREE' : `KES ${(delivery || 0).toLocaleString()}`;
     const isPod = paymentMethod && paymentMethod.toLowerCase() === 'pod';
 
     const subject = isPod
@@ -176,34 +174,43 @@ async function sendMpesaOrderReceivedEmail(orderData) {
       ? '📦 ORDER RECEIVED - RIDER ON THE WAY'
       : '✅ PAYMENT CONFIRMED - ORDER ON THE WAY';
 
-    const messageHtml = isPod ? `
-      <p style="color:#888;font-size:14px;">Your order has been received! Our rider is on the way to deliver your drinks.</p>
-      <p style="color:#888;font-size:14px;margin-top:12px;">The rider will call <strong style="color:#f0a500;">${escapeHtml(phone || '')}</strong> when approaching your location.</p>
-      <p style="color:#f0a500;font-size:15px;font-weight:800;margin-top:12px;">💰 Please have the exact cash ready upon delivery.</p>
-    ` : `
-      <p style="color:#888;font-size:14px;">Your M-PESA payment of <strong style="color:#22C55E;">KES ${(total || 0).toLocaleString()}</strong> has been received! 🎉</p>
-      <p style="color:#888;font-size:14px;margin-top:12px;">Your order is now being prepared. Our rider is on the way to deliver your drinks.</p>
-      <p style="color:#888;font-size:14px;">The rider will call <strong style="color:#f0a500;">${escapeHtml(phone || '')}</strong> when approaching your location.</p>
-    `;
+    let messageHtml = '';
+    if (isPod) {
+      messageHtml = `
+        <p style="color:#888;font-size:14px;">Your order has been received! Our rider is on the way to deliver your drinks.</p>
+        <p style="color:#888;font-size:14px;margin-top:12px;">The rider will call <strong style="color:#f0a500;">${escapeHtml(phone || '')}</strong> when approaching your location.</p>
+        <p style="color:#f0a500;font-size:15px;font-weight:800;margin-top:12px;">💰 Please have the exact cash ready upon delivery.</p>
+      `;
+    } else {
+      messageHtml = `
+        <p style="color:#888;font-size:14px;">Your M-PESA payment of <strong style="color:#22C55E;">KES ${(total || 0).toLocaleString()}</strong> has been received! 🎉</p>
+        <p style="color:#888;font-size:14px;margin-top:12px;">Your order is now being prepared. Our rider is on the way to deliver your drinks.</p>
+        <p style="color:#888;font-size:14px;">The rider will call <strong style="color:#f0a500;">${escapeHtml(phone || '')}</strong> when approaching your location.</p>
+      `;
+    }
 
     const totalLabel = isPod ? '💰 TOTAL TO PAY' : '✅ TOTAL PAID';
-    const totalColor = isPod ? '#f0a500' : '#22C55E';
 
-    const itemsHtml = (items || []).map(item => {
-      const productName = item.product_name || item.name || 'Product';
-      const productQty = item.quantity || item.qty || 1;
-      const productPrice = item.price || 0;
-      const productSize = item.size || '750ml';
-      return `
-        <tr style="border-bottom:1px solid #1c1c28;">
-          <td style="padding:12px 0;">
-            <span style="color:#e0e0e0;">${escapeHtml(productName)} x${productQty}</span><br>
-            <span style="color:#555;font-size:11px;">${escapeHtml(productSize)}</span>
-          </td>
-          <td style="padding:12px 0;text-align:right;color:#f0a500;">KES ${(productPrice * productQty).toLocaleString()}</td>
-        </tr>
-      `;
-    }).join('');
+    let itemsHtml = '';
+    if (items && items.length > 0) {
+      itemsHtml = items.map(item => {
+        const productName = item.product_name || item.name || 'Product';
+        const productQty = item.quantity || item.qty || 1;
+        const productPrice = item.price || 0;
+        const productSize = item.size || '750ml';
+        return `
+          <tr style="border-bottom:1px solid #1c1c28;">
+            <td style="padding:12px 0;">
+              <span style="color:#e0e0e0;">${escapeHtml(productName)} x${productQty}</span><br>
+              <span style="color:#555;font-size:11px;">${escapeHtml(productSize)}</span>
+            </td>
+            <td style="padding:12px 0;text-align:right;color:#f0a500;">KES ${(productPrice * productQty).toLocaleString()}</td>
+          </tr>
+        `;
+      }).join('');
+    } else {
+      itemsHtml = '<tr><td colspan="2" style="padding:12px;color:#666;text-align:center;">No items</td></tr>';
+    }
 
     const html = `<!DOCTYPE html>
 <html>
@@ -321,7 +328,16 @@ async function sendOrderDeliveredEmail(orderData) {
   }
 
   try {
-    const { orderId, customerName, items, total, subtotal, delivery, phone, customerEmail } = orderData;
+    const { 
+      orderId, 
+      customerName, 
+      items, 
+      total, 
+      subtotal, 
+      delivery, 
+      phone, 
+      customerEmail 
+    } = orderData;
 
     if (!customerEmail || !orderId) {
       console.error('❌ Missing required fields for delivered email:', { customerEmail, orderId });
@@ -330,17 +346,22 @@ async function sendOrderDeliveredEmail(orderData) {
 
     const deliveryText = delivery === 0 ? 'FREE' : `KES ${(delivery || 0).toLocaleString()}`;
 
-    const itemsHtml = (items || []).map(item => {
-      const productName = item.product_name || item.name || 'Product';
-      const quantity = item.quantity || item.qty || 1;
-      const productPrice = item.price || 0;
-      return `
-        <tr style="border-bottom:1px solid #1c1c28;">
-          <td style="padding:8px 0;color:#ddd;font-size:14px;">${escapeHtml(productName)} x${quantity}</td>
-          <td style="padding:8px 0;text-align:right;color:#22C55E;font-size:14px;">KES ${(productPrice * quantity).toLocaleString()}</td>
-        </tr>
-      `;
-    }).join('');
+    let itemsHtml = '';
+    if (items && items.length > 0) {
+      itemsHtml = items.map(item => {
+        const productName = item.product_name || item.name || 'Product';
+        const quantity = item.quantity || item.qty || 1;
+        const productPrice = item.price || 0;
+        return `
+          <tr style="border-bottom:1px solid #1c1c28;">
+            <td style="padding:8px 0;color:#ddd;font-size:14px;">${escapeHtml(productName)} x${quantity}</td>
+            <td style="padding:8px 0;text-align:right;color:#22C55E;font-size:14px;">KES ${(productPrice * quantity).toLocaleString()}</td>
+          </tr>
+        `;
+      }).join('');
+    } else {
+      itemsHtml = '<tr><td colspan="2" style="padding:12px;color:#666;text-align:center;">No items</td></tr>';
+    }
 
     const html = `<!DOCTYPE html>
 <html>
@@ -409,8 +430,8 @@ async function sendOrderDeliveredEmail(orderData) {
   <div class="table-wrap">
     <table class="table">
       <tr><th colspan="2">📋 ORDER SUMMARY</th></tr>
-      ${itemsHtml || '<tr><td colspan="2" style="padding:12px;color:#666;text-align:center;">No items</td></tr>'}
-      ${subtotal ? `<tr class="row-sub"><td>Subtotal</td><td>KES ${(subtotal || 0).toLocaleString()}</td></tr>` : ''}
+      ${itemsHtml}
+      ${subtotal !== undefined ? `<tr class="row-sub"><td>Subtotal</td><td>KES ${(subtotal || 0).toLocaleString()}</td></tr>` : ''}
       ${delivery !== undefined ? `<tr class="row-sub"><td>Delivery</td><td>${deliveryText}</td></tr>` : ''}
       <tr class="row-total"><td>Total</td><td>KES ${(total || 0).toLocaleString()}</td></tr>
     </table>
@@ -438,7 +459,7 @@ async function sendOrderDeliveredEmail(orderData) {
 
     const result = await sendBrevoEmail(customerEmail, `✅ Order Delivered - ${orderId} - LiquorBelle`, html);
     console.log(`✅ Order delivered email sent to ${customerEmail}`);
-    return { success: true };
+    return result;
 
   } catch (err) {
     console.error('❌ Email error:', err.response?.data?.message || err.message);
