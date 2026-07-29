@@ -33,7 +33,6 @@ async function calculateDeliveryFee(area, subtotal) {
       return DEFAULT_DELIVERY.fee;
     }
 
-    // Get delivery settings
     const settings = await db.collection('settings').findOne({ key: 'delivery' });
     const defaultFee = settings?.value?.default_fee || DEFAULT_DELIVERY.fee;
     const freeThreshold = settings?.value?.free_threshold || DEFAULT_DELIVERY.freeThreshold;
@@ -43,17 +42,14 @@ async function calculateDeliveryFee(area, subtotal) {
       return 0;
     }
 
-    // Check free delivery based on subtotal
     if (subtotal && subtotal >= freeThreshold) {
       return 0;
     }
 
-    // If no area specified, return default fee
     if (!area) {
       return defaultFee;
     }
 
-    // Find zone fee (case-insensitive)
     const zone = await db.collection('delivery_zones').findOne({
       name: { $regex: new RegExp('^' + area.trim() + '$', 'i') }
     });
@@ -154,23 +150,19 @@ router.get('/all', requireAdminOrCashier, [
 
     let query = {};
     
-    // Status filter
     if (status && status !== 'all') {
       query.status = status;
     }
     
-    // Days filter
     if (days && days !== 'all') {
       const daysAgo = new Date(Date.now() - parseInt(days) * 24 * 60 * 60 * 1000);
       query.created_at = { $gte: daysAgo };
     }
 
-    // Payment method filter
     if (paymentMethod && paymentMethod !== 'all') {
       query.payment_method = paymentMethod;
     }
 
-    // Search filter (customer name, email, phone, order number)
     if (search) {
       query.$or = [
         { customer_name: { $regex: search, $options: 'i' } },
@@ -401,7 +393,6 @@ router.post('/', requireAdminOrCashier, [
       deliveryArea
     } = req.body;
 
-    // Check if order number already exists
     const existing = await db.collection('orders').findOne({ 
       order_number: orderNumber 
     });
@@ -412,7 +403,6 @@ router.post('/', requireAdminOrCashier, [
       });
     }
 
-    // Calculate delivery fee using zone system if not provided
     let finalDelivery = delivery;
     if (finalDelivery === undefined || finalDelivery === null) {
       finalDelivery = await calculateDeliveryFee(deliveryArea, subtotal || 0);
@@ -442,7 +432,6 @@ router.post('/', requireAdminOrCashier, [
 
     const result = await db.collection('orders').insertOne(order);
 
-    // Clear cache
     clearOrderCache();
     if (customerEmail) {
       orderCache.del('orders_' + customerEmail.toLowerCase());
@@ -462,7 +451,7 @@ router.post('/', requireAdminOrCashier, [
   }
 });
 
-// ==================== PAY ON DELIVERY (POD) ====================
+// ==================== PAY ON DELIVERY (POD) - FIXED WITH EMAIL ====================
 router.post('/pod', orderCreateLimiter, [
   body('customerName').notEmpty().withMessage('Name required'),
   body('customerEmail').isEmail().withMessage('Valid email required'),
@@ -509,7 +498,6 @@ router.post('/pod', orderCreateLimiter, [
       ? orderNumber.trim()
       : 'POD-' + Date.now().toString(36).toUpperCase();
 
-    // Check if order number already exists
     const existing = await db.collection('orders').findOne({ 
       order_number: finalOrderNumber 
     });
@@ -520,7 +508,6 @@ router.post('/pod', orderCreateLimiter, [
       });
     }
 
-    // Calculate delivery fee using zone system if not provided
     let finalDelivery = delivery;
     if (finalDelivery === undefined || finalDelivery === null) {
       finalDelivery = await calculateDeliveryFee(deliveryArea, subtotal || 0);
@@ -550,21 +537,29 @@ router.post('/pod', orderCreateLimiter, [
 
     const result = await db.collection('orders').insertOne(order);
 
-    // Send email
-    await sendMpesaOrderReceivedEmail({
-      orderId: finalOrderNumber,
-      customerName,
-      items: order.items,
-      subtotal: order.subtotal,
-      delivery: order.delivery,
-      total: order.total,
-      address,
-      phone,
-      customerEmail,
-      paymentMethod: 'pod'
-    });
+    // ============================================================
+    // 🔥 SEND EMAIL FOR POD ORDER (FIXED - NOW WORKS)
+    // ============================================================
+    try {
+      console.log(`📧 Sending POD email to ${customerEmail} for order ${finalOrderNumber}`);
+      await sendMpesaOrderReceivedEmail({
+        orderId: finalOrderNumber,
+        customerName: customerName,
+        customerEmail: customerEmail.toLowerCase(),
+        items: order.items,
+        subtotal: order.subtotal,
+        delivery: order.delivery,
+        total: order.total,
+        address: address,
+        phone: phone,
+        paymentMethod: 'pod'
+      });
+      console.log(`✅ POD email sent successfully to ${customerEmail}`);
+    } catch (emailError) {
+      console.error('❌ POD email error (non-blocking):', emailError.message);
+      // Don't fail the order if email fails
+    }
 
-    // Clear cache
     clearOrderCache();
     orderCache.del('orders_' + customerEmail.toLowerCase());
 
@@ -577,7 +572,130 @@ router.post('/pod', orderCreateLimiter, [
     console.error('Error creating POD order:', err);
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to place order' 
+      message: 'Failed to place order: ' + err.message 
+    });
+  }
+});
+
+// ==================== GET ORDERS FOR AUTHENTICATED CUSTOMER (Frontend uses this) ====================
+router.get('/me/orders', requireCustomer, async (req, res) => {
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
+
+    const customerId = req.customer?.userId || req.user?.userId;
+    
+    if (!customerId) {
+      return res.status(401).json({
+        success: false,
+        message: 'User not authenticated'
+      });
+    }
+
+    const customer = await db.collection('customers').findOne({
+      _id: new ObjectId(customerId)
+    });
+
+    if (!customer) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Customer not found' 
+      });
+    }
+
+    if (customer.deleted === true) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account has been deactivated'
+      });
+    }
+
+    const orders = await db.collection('orders')
+      .find({
+        $or: [
+          { customer_email: customer.email },
+          { phone: customer.phone }
+        ]
+      })
+      .sort({ created_at: -1 })
+      .toArray();
+
+    console.log(`📋 Found ${orders.length} orders for ${customer.email}`);
+
+    res.json({ 
+      success: true, 
+      orders, 
+      count: orders.length 
+    });
+  } catch (err) {
+    console.error('Error fetching customer orders:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch orders: ' + err.message 
+    });
+  }
+});
+
+// ==================== GET ORDERS BY CUSTOMER (Admin) ====================
+router.get('/customer/:id', requireAdmin, [
+  param('id').custom(value => ObjectId.isValid(value)).withMessage('Invalid customer ID')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation failed',
+      errors: errors.array()
+    });
+  }
+
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
+
+    const { id } = req.params;
+
+    const customer = await db.collection('customers').findOne({
+      _id: new ObjectId(id)
+    });
+
+    if (!customer) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Customer not found' 
+      });
+    }
+
+    const orders = await db.collection('orders')
+      .find({
+        $or: [
+          { customer_email: customer.email },
+          { phone: customer.phone }
+        ]
+      })
+      .sort({ created_at: -1 })
+      .toArray();
+
+    res.json({ 
+      success: true, 
+      orders, 
+      count: orders.length 
+    });
+  } catch (err) {
+    console.error('Error fetching customer orders:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch orders' 
     });
   }
 });
@@ -620,24 +738,29 @@ router.put('/:id/status', requireAdmin, [
       });
     }
 
-    // Clear cache
     clearOrderCache();
     orderCache.del('order_' + id);
 
-    // Get order for email and cache clearing
     const order = await db.collection('orders').findOne({ _id: new ObjectId(id) });
     if (order && order.customer_email) {
       orderCache.del('orders_' + order.customer_email.toLowerCase());
 
       if (status === 'delivered') {
-        await sendOrderDeliveredEmail({
-          orderId: order.order_number,
-          customerName: order.customer_name,
-          items: order.items,
-          total: order.total,
-          phone: order.phone,
-          customerEmail: order.customer_email
-        });
+        try {
+          await sendOrderDeliveredEmail({
+            orderId: order.order_number,
+            customerName: order.customer_name,
+            customerEmail: order.customer_email,
+            items: order.items,
+            subtotal: order.subtotal,
+            delivery: order.delivery,
+            total: order.total,
+            phone: order.phone
+          });
+          console.log(`✅ Delivery email sent for order ${order.order_number}`);
+        } catch (emailError) {
+          console.error('❌ Delivery email error:', emailError);
+        }
       }
     }
 
@@ -692,7 +815,6 @@ router.put('/cashier/:id/status', requireAdminOrCashier, [
       });
     }
 
-    // Clear cache
     clearOrderCache();
     orderCache.del('order_' + id);
 
@@ -701,14 +823,21 @@ router.put('/cashier/:id/status', requireAdminOrCashier, [
       orderCache.del('orders_' + order.customer_email.toLowerCase());
 
       if (status === 'delivered') {
-        await sendOrderDeliveredEmail({
-          orderId: order.order_number,
-          customerName: order.customer_name,
-          items: order.items,
-          total: order.total,
-          phone: order.phone,
-          customerEmail: order.customer_email
-        });
+        try {
+          await sendOrderDeliveredEmail({
+            orderId: order.order_number,
+            customerName: order.customer_name,
+            customerEmail: order.customer_email,
+            items: order.items,
+            subtotal: order.subtotal,
+            delivery: order.delivery,
+            total: order.total,
+            phone: order.phone
+          });
+          console.log(`✅ Delivery email sent for order ${order.order_number}`);
+        } catch (emailError) {
+          console.error('❌ Delivery email error:', emailError);
+        }
       }
     }
 
@@ -810,7 +939,6 @@ router.delete('/:id', requireAdmin, [
       });
     }
 
-    // Prevent deleting delivered orders (optional safety)
     if (order.status === 'delivered') {
       return res.status(400).json({
         success: false,
@@ -835,54 +963,6 @@ router.delete('/:id', requireAdmin, [
     res.status(500).json({ 
       success: false, 
       message: 'Failed to delete order' 
-    });
-  }
-});
-
-// ==================== GET ORDERS BY CUSTOMER (Protected) ====================
-router.get('/customer/me', requireCustomer, async (req, res) => {
-  try {
-    const db = getDB();
-    if (!db) {
-      return res.status(503).json({ 
-        success: false, 
-        message: 'Database connecting...' 
-      });
-    }
-
-    const customerId = req.customer.userId;
-
-    const customer = await db.collection('customers').findOne({
-      _id: new ObjectId(customerId)
-    });
-
-    if (!customer) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Customer not found' 
-      });
-    }
-
-    const orders = await db.collection('orders')
-      .find({
-        $or: [
-          { customer_email: customer.email },
-          { phone: customer.phone }
-        ]
-      })
-      .sort({ created_at: -1 })
-      .toArray();
-
-    res.json({ 
-      success: true, 
-      orders, 
-      count: orders.length 
-    });
-  } catch (err) {
-    console.error('Error fetching customer orders:', err);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to fetch orders' 
     });
   }
 });
