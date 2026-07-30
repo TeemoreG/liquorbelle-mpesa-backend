@@ -185,6 +185,47 @@ class Database {
     } catch (error) {
       console.error('Index creation warning:', error.message);
     }
+    
+    // ✅ AUTO-SEED DELIVERY ZONES (Added to fix deleted delivery-zones.js)
+    try {
+      const zonesCollection = this.db.collection('delivery_zones');
+      const count = await zonesCollection.countDocuments();
+      if (count === 0) {
+        console.log('🌱 Seeding default delivery zones...');
+        await zonesCollection.insertMany([
+          { name: 'Dagoretti Road', fee: 150 },
+          { name: 'Naivasha Road', fee: 150 },
+          { name: 'Kikuyu Road', fee: 150 },
+          { name: 'Ngong Road', fee: 150 },
+          { name: 'Kilimani', fee: 150 },
+          { name: 'Kileleshwa', fee: 150 },
+          { name: 'Lavington', fee: 150 },
+          { name: 'Hurlingham', fee: 150 },
+          { name: 'Upper Hill', fee: 150 },
+          { name: 'Nairobi CBD', fee: 150 },
+          { name: 'Westlands', fee: 180 },
+          { name: 'Parklands', fee: 180 },
+          { name: 'Muthaiga', fee: 180 },
+          { name: 'Karen', fee: 180 },
+          { name: 'Langata', fee: 180 },
+          { name: 'Waiyaki Way', fee: 180 },
+          { name: 'Rongai', fee: 220 },
+          { name: 'South B', fee: 220 },
+          { name: 'Waithaka', fee: 220 },
+          { name: 'Runda', fee: 220 },
+          { name: 'Gigiri', fee: 220 },
+          { name: 'Loresho', fee: 220 },
+          { name: 'Kiambu Road', fee: 220 },
+          { name: 'Ruaka', fee: 280 },
+          { name: 'Kikuyu', fee: 280 }
+        ]);
+        console.log('✅ Default delivery zones seeded successfully');
+      } else {
+        console.log(`✅ Found ${count} delivery zones in database. Skipping seed.`);
+      }
+    } catch (err) {
+      console.warn('⚠️ Could not seed delivery zones:', err.message);
+    }
   }
 
   /**
