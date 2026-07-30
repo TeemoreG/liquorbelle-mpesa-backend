@@ -42,7 +42,7 @@ function getFeeByDistance(distance) {
   return DELIVERY_TIERS[DELIVERY_TIERS.length - 1].fee; // Default to highest tier
 }
 
-// ==================== GET DELIVERY SETTINGS (Public) ====================
+// ==================== GET DELIVERY SETTINGS & ZONES (Public) ====================
 router.get('/delivery-settings', async (req, res) => {
   try {
     const db = getDB();
@@ -53,19 +53,29 @@ router.get('/delivery-settings', async (req, res) => {
           ...DEFAULT_DELIVERY,
           shop: { lat: SHOP_LAT, lng: SHOP_LNG },
           tiers: DELIVERY_TIERS
-        }
+        },
+        zones: getDefaultZones()
       });
     }
 
     const settings = await db.collection('settings').findOne({ key: 'delivery' });
+    const zones = await db.collection('delivery_zones').find({}).sort({ name: 1 }).toArray();
     
+    // ✅ FORCE a default fallback if the database returns null or 0
+    const dbSettings = settings?.value || DEFAULT_DELIVERY;
+    const safeThreshold = (dbSettings.free_delivery_threshold && dbSettings.free_delivery_threshold > 0) 
+                          ? dbSettings.free_delivery_threshold 
+                          : 5000;
+
     res.json({ 
       success: true, 
       settings: {
-        ...(settings?.value || DEFAULT_DELIVERY),
+        ...dbSettings,
+        free_delivery_threshold: safeThreshold,
         shop: { lat: SHOP_LAT, lng: SHOP_LNG },
         tiers: DELIVERY_TIERS
-      }
+      },
+      zones: zones.length > 0 ? zones : getDefaultZones()
     });
   } catch (err) {
     console.error('Error fetching delivery settings:', err);
@@ -73,47 +83,40 @@ router.get('/delivery-settings', async (req, res) => {
       success: true, 
       settings: {
         ...DEFAULT_DELIVERY,
+        free_delivery_threshold: 5000,
         shop: { lat: SHOP_LAT, lng: SHOP_LNG },
         tiers: DELIVERY_TIERS
-      }
+      },
+      zones: getDefaultZones()
     });
   }
 });
 
-// ==================== GET DELIVERY SETTINGS (Admin) ====================
-router.get('/admin/delivery-settings', requireAdmin, async (req, res) => {
+// ==================== GET DELIVERY ZONES (Public) ====================
+router.get('/zones', async (req, res) => {
   try {
     const db = getDB();
     if (!db) {
-      return res.json({ 
-        success: true, 
-        settings: {
-          ...DEFAULT_DELIVERY,
-          shop: { lat: SHOP_LAT, lng: SHOP_LNG },
-          tiers: DELIVERY_TIERS
-        }
+      return res.json({
+        success: true,
+        zones: getDefaultZones()
       });
     }
 
-    const settings = await db.collection('settings').findOne({ key: 'delivery' });
+    const zones = await db.collection('delivery_zones')
+      .find({})
+      .sort({ name: 1 })
+      .toArray();
     
-    res.json({ 
-      success: true, 
-      settings: {
-        ...(settings?.value || DEFAULT_DELIVERY),
-        shop: { lat: SHOP_LAT, lng: SHOP_LNG },
-        tiers: DELIVERY_TIERS
-      }
+    res.json({
+      success: true,
+      zones: zones.length > 0 ? zones : getDefaultZones()
     });
   } catch (err) {
-    console.error('Error fetching delivery settings:', err);
-    res.json({ 
-      success: true, 
-      settings: {
-        ...DEFAULT_DELIVERY,
-        shop: { lat: SHOP_LAT, lng: SHOP_LNG },
-        tiers: DELIVERY_TIERS
-      }
+    console.error('Error fetching delivery zones:', err);
+    res.json({
+      success: true,
+      zones: getDefaultZones()
     });
   }
 });
@@ -174,92 +177,9 @@ router.post('/admin/delivery-settings', requireAdmin, [
   }
 });
 
-// ==================== GET ALL DELIVERY ZONES (Public) ====================
-router.get('/zones', async (req, res) => {
-  try {
-    const db = getDB();
-    if (!db) {
-      return res.json({
-        success: true,
-        zones: [],
-        settings: {
-          ...DEFAULT_DELIVERY,
-          shop: { lat: SHOP_LAT, lng: SHOP_LNG },
-          tiers: DELIVERY_TIERS
-        }
-      });
-    }
-
-    const zones = await db.collection('delivery_zones')
-      .find({})
-      .sort({ name: 1 })
-      .toArray();
-    
-    const settings = await db.collection('settings').findOne({ key: 'delivery' });
-    
-    res.json({
-      success: true,
-      zones: zones,
-      settings: {
-        ...(settings?.value || DEFAULT_DELIVERY),
-        shop: { lat: SHOP_LAT, lng: SHOP_LNG },
-        tiers: DELIVERY_TIERS
-      }
-    });
-  } catch (err) {
-    console.error('Error fetching delivery zones:', err);
-    res.json({
-      success: true,
-      zones: [],
-      settings: {
-        ...DEFAULT_DELIVERY,
-        shop: { lat: SHOP_LAT, lng: SHOP_LNG },
-        tiers: DELIVERY_TIERS
-      }
-    });
-  }
-});
-
-// ==================== GET DELIVERY ZONES (Admin) ====================
-router.get('/admin/zones', requireAdmin, async (req, res) => {
-  try {
-    const db = getDB();
-    if (!db) {
-      return res.status(503).json({ 
-        success: false, 
-        message: 'Database connecting...' 
-      });
-    }
-
-    const zones = await db.collection('delivery_zones')
-      .find({})
-      .sort({ name: 1 })
-      .toArray();
-    
-    const settings = await db.collection('settings').findOne({ key: 'delivery' });
-    
-    res.json({
-      success: true,
-      zones: zones,
-      settings: {
-        ...(settings?.value || DEFAULT_DELIVERY),
-        shop: { lat: SHOP_LAT, lng: SHOP_LNG },
-        tiers: DELIVERY_TIERS
-      }
-    });
-  } catch (err) {
-    console.error('Error fetching delivery zones:', err);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to fetch delivery zones' 
-    });
-  }
-});
-
-// ==================== SAVE DELIVERY ZONES (Admin) ====================
+// ==================== UPDATE DELIVERY ZONES (Admin) ====================
 router.post('/admin/zones', requireAdmin, [
-  body('zones').isArray().withMessage('Zones must be an array'),
-  body('settings').optional().isObject().withMessage('Settings must be an object')
+  body('zones').isArray().withMessage('Zones must be an array')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -279,7 +199,7 @@ router.post('/admin/zones', requireAdmin, [
       });
     }
 
-    const { zones, settings } = req.body;
+    const { zones } = req.body;
 
     await db.collection('delivery_zones').deleteMany({});
     
@@ -292,24 +212,6 @@ router.post('/admin/zones', requireAdmin, [
       }));
       
       await db.collection('delivery_zones').insertMany(zonesToInsert);
-    }
-
-    if (settings) {
-      const { default_fee, free_threshold, enabled } = settings;
-      const deliverySettings = {
-        default_fee: default_fee !== undefined ? default_fee : DEFAULT_DELIVERY.fee,
-        free_threshold: free_threshold !== undefined ? free_threshold : DEFAULT_DELIVERY.freeThreshold,
-        enabled: enabled !== undefined ? enabled : DEFAULT_DELIVERY.enabled,
-        shop: { lat: SHOP_LAT, lng: SHOP_LNG },
-        tiers: DELIVERY_TIERS,
-        updated_at: new Date()
-      };
-      
-      await db.collection('settings').updateOne(
-        { key: 'delivery' },
-        { $set: { value: deliverySettings } },
-        { upsert: true }
-      );
     }
     
     res.json({ 
@@ -356,8 +258,13 @@ router.post('/calculate-fee', [
     
     // Get delivery settings
     const settings = await db.collection('settings').findOne({ key: 'delivery' });
-    const freeThreshold = settings?.value?.free_threshold || DEFAULT_DELIVERY.freeThreshold;
-    const enabled = settings?.value?.enabled !== false;
+    const dbSettings = settings?.value || DEFAULT_DELIVERY;
+    
+    // ✅ SAFE FALLBACK: Use 5000 if DB returns 0 or null
+    const freeThreshold = (dbSettings.free_delivery_threshold && dbSettings.free_delivery_threshold > 0) 
+                          ? dbSettings.free_delivery_threshold 
+                          : 5000;
+    const enabled = dbSettings.delivery_enabled !== false;
     
     if (!enabled) {
       return res.json({
@@ -396,8 +303,8 @@ router.post('/calculate-fee', [
 });
 
 // ==================== GET DEFAULT ZONES (Helper) ====================
-router.get('/default-zones', async (req, res) => {
-  const defaultZones = [
+function getDefaultZones() {
+  return [
     // === 0–5 km — KES 150 ===
     { name: 'Dagoretti Road', fee: 150 },
     { name: 'Naivasha Road', fee: 150 },
@@ -431,18 +338,6 @@ router.get('/default-zones', async (req, res) => {
     { name: 'Ruaka', fee: 280 },
     { name: 'Kikuyu', fee: 280 }
   ];
-
-  res.json({
-    success: true,
-    zones: defaultZones,
-    settings: {
-      default_fee: 150,
-      free_threshold: 5000,
-      enabled: true,
-      shop: { lat: SHOP_LAT, lng: SHOP_LNG },
-      tiers: DELIVERY_TIERS
-    }
-  });
-});
+}
 
 module.exports = router;
