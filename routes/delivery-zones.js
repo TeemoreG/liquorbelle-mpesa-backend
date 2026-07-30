@@ -1,6 +1,6 @@
 const express = require('express');
 const { getDB } = require('../config/database');
-const { requireAdmin } = require('../middleware/auth'); // ✅ Changed from authenticateAdmin to requireAdmin
+const { requireAdmin } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -30,7 +30,7 @@ router.get('/', async (req, res) => {
 });
 
 // ==================== UPDATE DELIVERY ZONES ====================
-router.put('/', requireAdmin, async (req, res) => { // ✅ Changed from authenticateAdmin to requireAdmin
+router.put('/', requireAdmin, async (req, res) => {
   const { zones } = req.body;
   const db = getDB();
   
@@ -49,10 +49,8 @@ router.put('/', requireAdmin, async (req, res) => { // ✅ Changed from authenti
   }
 
   try {
-    // Clear existing zones
     await db.collection('delivery_zones').deleteMany({});
     
-    // Insert new zones
     if (zones.length > 0) {
       const zonesWithTimestamps = zones.map(z => ({
         ...z,
@@ -77,21 +75,44 @@ router.put('/', requireAdmin, async (req, res) => { // ✅ Changed from authenti
 
 function getDefaultZones() {
   return [
-    { name: 'Dagoretti', fee: 0 },
-    { name: 'Karen', fee: 50 },
-    { name: 'Westlands', fee: 100 },
-    { name: 'CBD', fee: 80 },
-    { name: 'Upperhill', fee: 70 },
-    { name: 'Kilimani', fee: 60 },
-    { name: 'Lavington', fee: 80 },
-    { name: 'Kileleshwa', fee: 70 },
-    { name: 'Rongai', fee: 120 },
-    { name: 'Ngong', fee: 150 },
-    { name: 'South B', fee: 100 },
-    { name: 'Langata', fee: 130 },
-    { name: 'Waithaka', fee: 140 },
-    { name: 'Kikuyu', fee: 160 },
-    { name: 'Runda', fee: 180 }
+    // === 0–5 km — KES 150 ===
+    { name: 'Dagoretti Road', fee: 150 },
+    { name: 'Naivasha Road', fee: 150 },
+    { name: 'Kikuyu Road', fee: 150 },
+    { name: 'Ngong Road', fee: 150 },
+    { name: 'Kilimani', fee: 150 },
+    { name: 'Kileleshwa', fee: 150 },
+    { name: 'Lavington', fee: 150 },
+    { name: 'Hurlingham', fee: 150 },
+    { name: 'Upper Hill', fee: 150 },
+    { name: 'Nairobi CBD', fee: 150 },
+    
+    // === 5–10 km — KES 180 ===
+    { name: 'Westlands', fee: 180 },
+    { name: 'Parklands', fee: 180 },
+    { name: 'Muthaiga', fee: 180 },
+    { name: 'Karen', fee: 180 },
+    { name: 'Langata', fee: 180 },
+    { name: 'Waiyaki Way', fee: 180 },
+    
+    // === 10–15 km — KES 220 ===
+    { name: 'Rongai', fee: 220 },
+    { name: 'South B', fee: 220 },
+    { name: 'Waithaka', fee: 220 },
+    { name: 'Runda', fee: 220 },
+    { name: 'Gigiri', fee: 220 },
+    { name: 'Loresho', fee: 220 },
+    { name: 'Kiambu Road', fee: 220 },
+    
+    // === 15–20 km — KES 280 ===
+    { name: 'Ruaka', fee: 280 },
+    { name: 'Kikuyu', fee: 280 },
+    
+    // === 20–30 km — KES 350 ===
+    // All other Nairobi suburbs
+    
+    // === 30+ km — KES 405 ===
+    // Anywhere beyond 30km (countrywide delivery)
   ];
 }
 

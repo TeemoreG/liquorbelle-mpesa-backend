@@ -6,6 +6,42 @@ const { DEFAULT_DELIVERY } = require('../config/constants');
 
 const router = express.Router();
 
+// ==================== SHOP LOCATION ====================
+const SHOP_LAT = -1.2832;
+const SHOP_LNG = 36.7254;
+
+// ==================== DELIVERY FEE TIERS (Distance-based) ====================
+const DELIVERY_TIERS = [
+  { minDistance: 0, maxDistance: 5, fee: 150 },
+  { minDistance: 5, maxDistance: 10, fee: 180 },
+  { minDistance: 10, maxDistance: 15, fee: 220 },
+  { minDistance: 15, maxDistance: 20, fee: 280 },
+  { minDistance: 20, maxDistance: 30, fee: 350 },
+  { minDistance: 30, maxDistance: Infinity, fee: 405 }
+];
+
+// ==================== HELPER: Calculate Distance (Haversine formula) ====================
+function calculateDistance(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLng/2) * Math.sin(dLng/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
+
+// ==================== HELPER: Get Fee by Distance ====================
+function getFeeByDistance(distance) {
+  for (const tier of DELIVERY_TIERS) {
+    if (distance >= tier.minDistance && distance < tier.maxDistance) {
+      return tier.fee;
+    }
+  }
+  return DELIVERY_TIERS[DELIVERY_TIERS.length - 1].fee; // Default to highest tier
+}
+
 // ==================== GET DELIVERY SETTINGS (Public) ====================
 router.get('/delivery-settings', async (req, res) => {
   try {
@@ -13,7 +49,11 @@ router.get('/delivery-settings', async (req, res) => {
     if (!db) {
       return res.json({ 
         success: true, 
-        settings: DEFAULT_DELIVERY 
+        settings: {
+          ...DEFAULT_DELIVERY,
+          shop: { lat: SHOP_LAT, lng: SHOP_LNG },
+          tiers: DELIVERY_TIERS
+        }
       });
     }
 
@@ -21,13 +61,21 @@ router.get('/delivery-settings', async (req, res) => {
     
     res.json({ 
       success: true, 
-      settings: settings?.value || DEFAULT_DELIVERY 
+      settings: {
+        ...(settings?.value || DEFAULT_DELIVERY),
+        shop: { lat: SHOP_LAT, lng: SHOP_LNG },
+        tiers: DELIVERY_TIERS
+      }
     });
   } catch (err) {
     console.error('Error fetching delivery settings:', err);
     res.json({ 
       success: true, 
-      settings: DEFAULT_DELIVERY 
+      settings: {
+        ...DEFAULT_DELIVERY,
+        shop: { lat: SHOP_LAT, lng: SHOP_LNG },
+        tiers: DELIVERY_TIERS
+      }
     });
   }
 });
@@ -39,7 +87,11 @@ router.get('/admin/delivery-settings', requireAdmin, async (req, res) => {
     if (!db) {
       return res.json({ 
         success: true, 
-        settings: DEFAULT_DELIVERY 
+        settings: {
+          ...DEFAULT_DELIVERY,
+          shop: { lat: SHOP_LAT, lng: SHOP_LNG },
+          tiers: DELIVERY_TIERS
+        }
       });
     }
 
@@ -47,13 +99,21 @@ router.get('/admin/delivery-settings', requireAdmin, async (req, res) => {
     
     res.json({ 
       success: true, 
-      settings: settings?.value || DEFAULT_DELIVERY 
+      settings: {
+        ...(settings?.value || DEFAULT_DELIVERY),
+        shop: { lat: SHOP_LAT, lng: SHOP_LNG },
+        tiers: DELIVERY_TIERS
+      }
     });
   } catch (err) {
     console.error('Error fetching delivery settings:', err);
     res.json({ 
       success: true, 
-      settings: DEFAULT_DELIVERY 
+      settings: {
+        ...DEFAULT_DELIVERY,
+        shop: { lat: SHOP_LAT, lng: SHOP_LNG },
+        tiers: DELIVERY_TIERS
+      }
     });
   }
 });
@@ -91,9 +151,11 @@ router.post('/admin/delivery-settings', requireAdmin, [
           value: {
             delivery_fee: delivery_fee !== undefined ? delivery_fee : DEFAULT_DELIVERY.fee,
             free_delivery_threshold: free_delivery_threshold !== undefined ? free_delivery_threshold : DEFAULT_DELIVERY.freeThreshold,
-            delivery_enabled: delivery_enabled !== undefined ? delivery_enabled : DEFAULT_DELIVERY.enabled
-          },
-          updated_at: new Date()
+            delivery_enabled: delivery_enabled !== undefined ? delivery_enabled : DEFAULT_DELIVERY.enabled,
+            shop: { lat: SHOP_LAT, lng: SHOP_LNG },
+            tiers: DELIVERY_TIERS,
+            updated_at: new Date()
+          }
         }
       },
       { upsert: true }
@@ -120,7 +182,11 @@ router.get('/zones', async (req, res) => {
       return res.json({
         success: true,
         zones: [],
-        settings: DEFAULT_DELIVERY
+        settings: {
+          ...DEFAULT_DELIVERY,
+          shop: { lat: SHOP_LAT, lng: SHOP_LNG },
+          tiers: DELIVERY_TIERS
+        }
       });
     }
 
@@ -134,14 +200,22 @@ router.get('/zones', async (req, res) => {
     res.json({
       success: true,
       zones: zones,
-      settings: settings?.value || DEFAULT_DELIVERY
+      settings: {
+        ...(settings?.value || DEFAULT_DELIVERY),
+        shop: { lat: SHOP_LAT, lng: SHOP_LNG },
+        tiers: DELIVERY_TIERS
+      }
     });
   } catch (err) {
     console.error('Error fetching delivery zones:', err);
     res.json({
       success: true,
       zones: [],
-      settings: DEFAULT_DELIVERY
+      settings: {
+        ...DEFAULT_DELIVERY,
+        shop: { lat: SHOP_LAT, lng: SHOP_LNG },
+        tiers: DELIVERY_TIERS
+      }
     });
   }
 });
@@ -167,7 +241,11 @@ router.get('/admin/zones', requireAdmin, async (req, res) => {
     res.json({
       success: true,
       zones: zones,
-      settings: settings?.value || DEFAULT_DELIVERY
+      settings: {
+        ...(settings?.value || DEFAULT_DELIVERY),
+        shop: { lat: SHOP_LAT, lng: SHOP_LNG },
+        tiers: DELIVERY_TIERS
+      }
     });
   } catch (err) {
     console.error('Error fetching delivery zones:', err);
@@ -203,14 +281,12 @@ router.post('/admin/zones', requireAdmin, [
 
     const { zones, settings } = req.body;
 
-    // Clear existing zones
     await db.collection('delivery_zones').deleteMany({});
     
-    // Insert new zones
     if (zones && zones.length > 0) {
       const zonesToInsert = zones.map(z => ({
         name: z.name.trim(),
-        fee: parseInt(z.fee) || 100,
+        fee: parseInt(z.fee) || 150,
         created_at: new Date(),
         updated_at: new Date()
       }));
@@ -218,13 +294,14 @@ router.post('/admin/zones', requireAdmin, [
       await db.collection('delivery_zones').insertMany(zonesToInsert);
     }
 
-    // Update delivery settings if provided
     if (settings) {
       const { default_fee, free_threshold, enabled } = settings;
       const deliverySettings = {
         default_fee: default_fee !== undefined ? default_fee : DEFAULT_DELIVERY.fee,
         free_threshold: free_threshold !== undefined ? free_threshold : DEFAULT_DELIVERY.freeThreshold,
         enabled: enabled !== undefined ? enabled : DEFAULT_DELIVERY.enabled,
+        shop: { lat: SHOP_LAT, lng: SHOP_LNG },
+        tiers: DELIVERY_TIERS,
         updated_at: new Date()
       };
       
@@ -250,7 +327,8 @@ router.post('/admin/zones', requireAdmin, [
 
 // ==================== CALCULATE DELIVERY FEE (Public) ====================
 router.post('/calculate-fee', [
-  body('area').notEmpty().withMessage('Area is required'),
+  body('lat').isNumeric().withMessage('Latitude is required'),
+  body('lng').isNumeric().withMessage('Longitude is required'),
   body('subtotal').optional().isNumeric().withMessage('Subtotal must be a number')
 ], async (req, res) => {
   const errors = validationResult(req);
@@ -271,11 +349,13 @@ router.post('/calculate-fee', [
       });
     }
 
-    const { area, subtotal = 0 } = req.body;
+    const { lat, lng, subtotal = 0 } = req.body;
+    
+    // Calculate distance from shop
+    const distance = calculateDistance(SHOP_LAT, SHOP_LNG, lat, lng);
     
     // Get delivery settings
     const settings = await db.collection('settings').findOne({ key: 'delivery' });
-    const defaultFee = settings?.value?.default_fee || DEFAULT_DELIVERY.fee;
     const freeThreshold = settings?.value?.free_threshold || DEFAULT_DELIVERY.freeThreshold;
     const enabled = settings?.value?.enabled !== false;
     
@@ -283,34 +363,28 @@ router.post('/calculate-fee', [
       return res.json({
         success: true,
         fee: 0,
+        distance: Math.round(distance * 10) / 10,
         isFree: true,
         reason: 'Delivery is currently disabled'
       });
     }
     
     // Check if delivery is free based on subtotal
+    let isFree = false;
+    let fee = getFeeByDistance(distance);
+    
     if (subtotal && subtotal >= freeThreshold) {
-      return res.json({
-        success: true,
-        fee: 0,
-        isFree: true,
-        reason: `Free delivery (order over KES ${freeThreshold.toLocaleString()})`
-      });
+      isFree = true;
+      fee = 0;
     }
-    
-    // Find zone fee (case-insensitive)
-    const zone = await db.collection('delivery_zones').findOne({
-      name: { $regex: new RegExp('^' + area.trim() + '$', 'i') }
-    });
-    
-    const fee = zone?.fee || defaultFee;
     
     res.json({
       success: true,
       fee: fee,
-      isFree: false,
-      zone: zone?.name || 'Default',
-      reason: `Delivery fee for ${area}`
+      distance: Math.round(distance * 10) / 10,
+      isFree: isFree,
+      shop: { lat: SHOP_LAT, lng: SHOP_LNG },
+      reason: isFree ? `Free delivery (order over KES ${freeThreshold.toLocaleString()})` : `Distance: ${Math.round(distance * 10) / 10}km`
     });
   } catch (err) {
     console.error('Error calculating delivery fee:', err);
@@ -324,30 +398,49 @@ router.post('/calculate-fee', [
 // ==================== GET DEFAULT ZONES (Helper) ====================
 router.get('/default-zones', async (req, res) => {
   const defaultZones = [
-    { name: 'Dagoretti', fee: 100 },
-    { name: 'Karen', fee: 100 },
-    { name: 'Kilimani', fee: 100 },
-    { name: 'Westlands', fee: 100 },
-    { name: 'CBD', fee: 100 },
-    { name: 'Upperhill', fee: 100 },
-    { name: 'Lavington', fee: 100 },
-    { name: 'Kileleshwa', fee: 100 },
-    { name: 'Rongai', fee: 100 },
-    { name: 'Ngong', fee: 100 },
-    { name: 'South B', fee: 100 },
-    { name: 'Langata', fee: 100 },
-    { name: 'Waithaka', fee: 100 },
-    { name: 'Kikuyu', fee: 100 },
-    { name: 'Runda', fee: 100 }
+    // === 0–5 km — KES 150 ===
+    { name: 'Dagoretti Road', fee: 150 },
+    { name: 'Naivasha Road', fee: 150 },
+    { name: 'Kikuyu Road', fee: 150 },
+    { name: 'Ngong Road', fee: 150 },
+    { name: 'Kilimani', fee: 150 },
+    { name: 'Kileleshwa', fee: 150 },
+    { name: 'Lavington', fee: 150 },
+    { name: 'Hurlingham', fee: 150 },
+    { name: 'Upper Hill', fee: 150 },
+    { name: 'Nairobi CBD', fee: 150 },
+    
+    // === 5–10 km — KES 180 ===
+    { name: 'Westlands', fee: 180 },
+    { name: 'Parklands', fee: 180 },
+    { name: 'Muthaiga', fee: 180 },
+    { name: 'Karen', fee: 180 },
+    { name: 'Langata', fee: 180 },
+    { name: 'Waiyaki Way', fee: 180 },
+    
+    // === 10–15 km — KES 220 ===
+    { name: 'Rongai', fee: 220 },
+    { name: 'South B', fee: 220 },
+    { name: 'Waithaka', fee: 220 },
+    { name: 'Runda', fee: 220 },
+    { name: 'Gigiri', fee: 220 },
+    { name: 'Loresho', fee: 220 },
+    { name: 'Kiambu Road', fee: 220 },
+    
+    // === 15–20 km — KES 280 ===
+    { name: 'Ruaka', fee: 280 },
+    { name: 'Kikuyu', fee: 280 }
   ];
 
   res.json({
     success: true,
     zones: defaultZones,
     settings: {
-      default_fee: 100,
-      free_threshold: 3000,
-      enabled: true
+      default_fee: 150,
+      free_threshold: 5000,
+      enabled: true,
+      shop: { lat: SHOP_LAT, lng: SHOP_LNG },
+      tiers: DELIVERY_TIERS
     }
   });
 });
