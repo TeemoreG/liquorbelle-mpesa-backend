@@ -189,8 +189,11 @@ app.use('/api', require('./routes/otp'));
 // Geocode routes
 app.use('/api/geocode', require('./routes/geocode'));
 
-// Delivery routes
+// ✅ Delivery routes (Public)
 app.use('/api', require('./routes/delivery'));
+
+// ✅ Delivery routes (Admin - Added to handle admin settings and zones)
+app.use('/api/admin', require('./routes/delivery'));
 
 // Categories routes
 app.use('/api/categories', require('./routes/categories'));
@@ -198,8 +201,7 @@ app.use('/api/categories', require('./routes/categories'));
 // Order tracking routes
 app.use('/api/orders/track', require('./routes/order-tracking'));
 
-// Delivery zones routes
-app.use('/api/delivery-zones', require('./routes/delivery-zones'));
+// ❌ DELETED: Delivery zones routes (File removed, merged into delivery.js)
 
 // ============================================================
 // 6. HEALTH CHECK & ROOT
