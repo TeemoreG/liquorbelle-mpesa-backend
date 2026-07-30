@@ -4,7 +4,7 @@ const { geocodeLimiter } = require('../config/rateLimits');
 
 const router = express.Router();
 
-// ==================== REVERSE GEOCODING ====================
+// ==================== REVERSE GEOCODING (GPS -> Address) ====================
 router.post('/reverse', geocodeLimiter, async (req, res) => {
   const { lat, lng } = req.body;
 
@@ -174,6 +174,136 @@ router.post('/reverse', geocodeLimiter, async (req, res) => {
       _service: 'error_fallback',
       _timestamp: new Date().toISOString(),
       _note: 'Geocoding error - basic address returned'
+    });
+  }
+});
+
+// ==================== 🔥 NEW: SEARCH BUILDINGS (Text -> Address) ====================
+router.post('/search', geocodeLimiter, async (req, res) => {
+  const { query, limit = 8, category } = req.body;
+
+  if (!query || query.length < 2) {
+    return res.status(400).json({ success: false, message: 'Search query must be at least 2 characters' });
+  }
+
+  try {
+    let results = [];
+    let usedService = '';
+
+    // ===== OPTION 1: Use LocationIQ Search (Primary) =====
+    const LOCATIONIQ_TOKEN = process.env.LOCATIONIQ_API_KEY;
+    if (LOCATIONIQ_TOKEN) {
+      try {
+        // Build query with category filter if provided
+        let searchQuery = query;
+        if (category) {
+          // LocationIQ doesn't support strict category filtering like Geoapify,
+          // so we append the category to improve results
+          searchQuery = `${query} ${category}`;
+        }
+
+        const url = `https://us1.locationiq.com/v1/search?key=${LOCATIONIQ_TOKEN}&q=${encodeURIComponent(searchQuery)}&format=json&limit=${limit}`;
+        const response = await axios.get(url, { timeout: 5000 });
+
+        if (response.data && Array.isArray(response.data)) {
+          results = response.data.map((place) => ({
+            name: place.display_name.split(',')[0] || place.display_name,
+            display_name: place.display_name,
+            lat: parseFloat(place.lat),
+            lon: parseFloat(place.lon),
+            type: place.type || 'building',
+            class: place.class || 'building'
+          }));
+          usedService = 'LocationIQ';
+          console.log(`📍 LocationIQ search found ${results.length} results for "${query}"`);
+        }
+      } catch (err) {
+        console.log('⚠️ LocationIQ search failed:', err.message);
+      }
+    }
+
+    // ===== OPTION 2: Geoapify Search (Fallback) =====
+    if (results.length === 0) {
+      const GEOAPIFY_KEY = process.env.GEOAPIFY_API_KEY;
+      if (GEOAPIFY_KEY) {
+        try {
+          let url = `https://api.geoapify.com/v1/geocode/search?text=${encodeURIComponent(query)}&apiKey=${GEOAPIFY_KEY}&limit=${limit}&format=json`;
+          // Add category filter for buildings/commercial/residential
+          if (category) {
+            url += `&filter=category:${category}`;
+          }
+          
+          const response = await axios.get(url, { timeout: 5000 });
+
+          if (response.data && response.data.results) {
+            results = response.data.results.map((place) => ({
+              name: place.address_line1 || place.formatted?.split(',')[0] || place.name || 'Location',
+              display_name: place.formatted || place.address_line1 || place.name,
+              lat: place.lat,
+              lon: place.lon,
+              type: place.category || 'building',
+              class: place.category || 'building'
+            }));
+            usedService = 'Geoapify';
+            console.log(`📍 Geoapify search found ${results.length} results for "${query}"`);
+          }
+        } catch (err) {
+          console.log('⚠️ Geoapify search failed:', err.message);
+        }
+      }
+    }
+
+    // ===== OPTION 3: OpenStreetMap Nominatim (Ultimate Fallback) =====
+    if (results.length === 0) {
+      try {
+        let searchQuery = query;
+        // Constrain to Nairobi/Kenya for better local results
+        if (!query.toLowerCase().includes('nairobi')) {
+          searchQuery = `${query}, Nairobi, Kenya`;
+        }
+
+        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&limit=${limit}&addressdetails=1&countrycodes=ke`;
+        const response = await axios.get(url, {
+          timeout: 8000,
+          headers: {
+            'User-Agent': 'LiquorBelle/1.0 (https://liquorbelle.com)'
+          }
+        });
+
+        if (response.data && Array.isArray(response.data)) {
+          results = response.data.map((place) => ({
+            name: place.display_name.split(',')[0] || place.display_name,
+            display_name: place.display_name,
+            lat: parseFloat(place.lat),
+            lon: parseFloat(place.lon),
+            type: place.type || place.class || 'building',
+            class: place.class || place.type || 'building'
+          }));
+          usedService = 'Nominatim';
+          console.log(`📍 Nominatim search found ${results.length} results for "${query}"`);
+        }
+      } catch (err) {
+        console.log('⚠️ Nominatim search failed:', err.message);
+      }
+    }
+
+    // Return standardized response
+    return res.json({
+      success: true,
+      results: results,
+      count: results.length,
+      _service: usedService || 'none',
+      _timestamp: new Date().toISOString()
+    });
+
+  } catch (err) {
+    console.error('❌ Geocoding search error:', err.message);
+    return res.status(500).json({
+      success: false,
+      results: [],
+      message: 'Search failed',
+      _error: err.message,
+      _timestamp: new Date().toISOString()
     });
   }
 });
