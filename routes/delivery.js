@@ -121,6 +121,35 @@ router.get('/zones', async (req, res) => {
   }
 });
 
+// ==================== GET ADMIN DELIVERY ZONES (Admin) ====================
+router.get('/admin/zones', requireAdmin, async (req, res) => {
+  try {
+    const db = getDB();
+    if (!db) {
+      return res.status(503).json({ 
+        success: false, 
+        message: 'Database connecting...' 
+      });
+    }
+
+    const zones = await db.collection('delivery_zones')
+      .find({})
+      .sort({ name: 1 })
+      .toArray();
+    
+    res.json({
+      success: true,
+      zones: zones.length > 0 ? zones : getDefaultZones()
+    });
+  } catch (err) {
+    console.error('Error fetching delivery zones:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch delivery zones' 
+    });
+  }
+});
+
 // ==================== UPDATE DELIVERY SETTINGS (Admin) ====================
 router.post('/admin/delivery-settings', requireAdmin, [
   body('delivery_fee').optional().isNumeric().withMessage('Delivery fee must be a number'),
