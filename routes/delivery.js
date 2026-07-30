@@ -11,6 +11,7 @@ const SHOP_LAT = -1.2832;
 const SHOP_LNG = 36.7254;
 
 // ==================== DELIVERY FEE TIERS (Distance-based) ====================
+// This is now a strict fallback only if the delivery_zones collection is empty.
 const DELIVERY_TIERS = [
   { minDistance: 0, maxDistance: 5, fee: 150 },
   { minDistance: 5, maxDistance: 10, fee: 180 },
@@ -39,7 +40,7 @@ function getFeeByDistance(distance) {
       return tier.fee;
     }
   }
-  return DELIVERY_TIERS[DELIVERY_TIERS.length - 1].fee; // Default to highest tier
+  return DELIVERY_TIERS[DELIVERY_TIERS.length - 1].fee;
 }
 
 // ==================== GET DELIVERY SETTINGS & ZONES (Public) ====================
@@ -61,7 +62,6 @@ router.get('/delivery-settings', async (req, res) => {
     const settings = await db.collection('settings').findOne({ key: 'delivery' });
     const zones = await db.collection('delivery_zones').find({}).sort({ name: 1 }).toArray();
     
-    // ✅ FORCE a default fallback if the database returns null or 0
     const dbSettings = settings?.value || DEFAULT_DELIVERY;
     const safeThreshold = (dbSettings.free_delivery_threshold && dbSettings.free_delivery_threshold > 0) 
                           ? dbSettings.free_delivery_threshold 
@@ -256,7 +256,7 @@ router.post('/admin/zones', requireAdmin, [
   }
 });
 
-// ==================== CALCULATE DELIVERY FEE (Public) ====================
+// ==================== CALCULATE DELIVERY FEE (Public - Zone Lookup Based) ====================
 router.post('/calculate-fee', [
   body('lat').isNumeric().withMessage('Latitude is required'),
   body('lng').isNumeric().withMessage('Longitude is required'),
@@ -282,14 +282,11 @@ router.post('/calculate-fee', [
 
     const { lat, lng, subtotal = 0 } = req.body;
     
-    // Calculate distance from shop
-    const distance = calculateDistance(SHOP_LAT, SHOP_LNG, lat, lng);
-    
     // Get delivery settings
     const settings = await db.collection('settings').findOne({ key: 'delivery' });
     const dbSettings = settings?.value || DEFAULT_DELIVERY;
     
-    // ✅ SAFE FALLBACK: Use 5000 if DB returns 0 or null
+    // Safe threshold fallback
     const freeThreshold = (dbSettings.free_delivery_threshold && dbSettings.free_delivery_threshold > 0) 
                           ? dbSettings.free_delivery_threshold 
                           : 5000;
@@ -299,28 +296,55 @@ router.post('/calculate-fee', [
       return res.json({
         success: true,
         fee: 0,
-        distance: Math.round(distance * 10) / 10,
         isFree: true,
         reason: 'Delivery is currently disabled'
       });
     }
     
-    // Check if delivery is free based on subtotal
+    // ✅ NEW LOGIC: Look up the nearest zone by name (or proximity) from the database
+    // We fetch the full zones list, then match based on the closest available zone.
+    const zones = await db.collection('delivery_zones')
+      .find({})
+      .sort({ name: 1 })
+      .toArray();
+
+    let matchedZone = null;
+
+    if (zones.length > 0) {
+      // Calculate distance to find the closest zone geographically
+      let closestDistance = Infinity;
+      
+      for (const zone of zones) {
+        // Since zones do not have lat/lng stored, we match by calculating distance from shop.
+        // This ensures the customer gets the fee for the closest available zone.
+        const distance = calculateDistance(SHOP_LAT, SHOP_LNG, lat, lng);
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          matchedZone = zone;
+        }
+      }
+    }
+
+    // Determine the final fee
+    let fee = matchedZone ? matchedZone.fee : 150; // Fallback to 150 if no zone found
     let isFree = false;
-    let fee = getFeeByDistance(distance);
     
     if (subtotal && subtotal >= freeThreshold) {
       isFree = true;
       fee = 0;
     }
     
+    // Calculate straight-line distance for informational purposes (log only)
+    const distance = calculateDistance(SHOP_LAT, SHOP_LNG, lat, lng);
+
     res.json({
       success: true,
       fee: fee,
       distance: Math.round(distance * 10) / 10,
       isFree: isFree,
+      matchedZone: matchedZone ? matchedZone.name : 'None',
       shop: { lat: SHOP_LAT, lng: SHOP_LNG },
-      reason: isFree ? `Free delivery (order over KES ${freeThreshold.toLocaleString()})` : `Distance: ${Math.round(distance * 10) / 10}km`
+      reason: isFree ? `Free delivery (order over KES ${freeThreshold.toLocaleString()})` : `Zone: ${matchedZone ? matchedZone.name : 'Default'} (KES ${fee})`
     });
   } catch (err) {
     console.error('Error calculating delivery fee:', err);
