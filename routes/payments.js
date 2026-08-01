@@ -70,13 +70,16 @@ router.post('/stkpush', stkLimiter, [
 
     console.log(`📱 Initiating STK Push for order ${orderId}, amount ${total}, phone ${formattedPhone}`);
 
-    // Callback URL
-    const callbackUrl = `https://liquorbelle-mpesa-backend.onrender.com/api/callback`;
+    // ✅ FIX 1: Use environment variable for callback URL
+    const callbackUrl = process.env.MPESA_CALLBACK_URL || 'https://liquorbelle-mpesa-backend.onrender.com/api/callback';
 
     // Initiate STK Push using mpesa.js
     const result = await initiateSTKPush(formattedPhone, total, orderId, callbackUrl);
 
     console.log(`✅ STK Push initiated for order ${orderId}:`, result);
+
+    // ✅ FIX 2: Ensure items is always a valid array
+    const validatedItems = Array.isArray(items) && items.length > 0 ? items : [];
 
     // Save pending order
     await db.collection('pending_orders').insertOne({
@@ -84,7 +87,7 @@ router.post('/stkpush', stkLimiter, [
       customerName: customerName || 'Guest',
       phone: formattedPhone,
       address: address || '',
-      items: items || [],
+      items: validatedItems, // ✅ Using validated items
       subtotal: subtotal || 0,
       delivery: delivery || 0,
       total: total,
@@ -263,6 +266,9 @@ router.post('/callback', async (req, res) => {
         if (pending.customerEmail) {
           orderCache.del('orders_' + pending.customerEmail.toLowerCase());
         }
+
+        // ✅ FIX 3: Delete pending order to prevent database bloat
+        await db.collection('pending_orders').deleteOne({ orderId });
 
       } else {
         console.log(`⚠️ No pending order found for ${orderId}`);

@@ -25,6 +25,51 @@ passport.use(new GoogleStrategy({
         email: email.toLowerCase() 
       });
 
+      // ✅ 1. If user exists but has NO Google ID → LINK the accounts
+      if (user && !user.googleId) {
+        console.log(`🔗 Linking Google account to existing user: ${email}`);
+        await db.collection('customers').updateOne(
+          { _id: user._id },
+          { 
+            $set: { 
+              googleId: profile.id,
+              googleData: {
+                accessToken: accessToken,
+                refreshToken: refreshToken,
+                profile: profile._json
+              },
+              authMethod: 'google',
+              updatedAt: new Date(),
+              lastLoginAt: new Date()
+            } 
+          }
+        );
+        user = await db.collection('customers').findOne({ _id: user._id });
+        console.log(`✅ Google account LINKED to existing user: ${email}`);
+        return done(null, user);
+      }
+
+      // ✅ 2. If user exists and has Google ID → Normal login
+      if (user && user.googleId) {
+        await db.collection('customers').updateOne(
+          { _id: user._id },
+          { 
+            $set: { 
+              lastLoginAt: new Date(),
+              googleData: {
+                accessToken: accessToken,
+                refreshToken: refreshToken,
+                profile: profile._json
+              }
+            } 
+          }
+        );
+        user = await db.collection('customers').findOne({ _id: user._id });
+        console.log(`✅ Google login for existing linked account: ${email}`);
+        return done(null, user);
+      }
+
+      // ✅ 3. Brand new user - create with Google ID
       if (!user) {
         const newUser = {
           email: email.toLowerCase(),
@@ -36,36 +81,21 @@ passport.use(new GoogleStrategy({
             refreshToken: refreshToken,
             profile: profile._json
           },
+          authMethod: 'google',
           createdAt: new Date(),
           updatedAt: new Date(),
           lastLoginAt: new Date(),
           orderHistory: [],
           favorites: []
         };
-
+        
         const result = await db.collection('customers').insertOne(newUser);
         user = { ...newUser, _id: result.insertedId };
         console.log(`✅ New Google user registered: ${email}`);
-      } else {
-        await db.collection('customers').updateOne(
-          { _id: user._id },
-          { 
-            $set: { 
-              googleId: profile.id,
-              googleData: {
-                accessToken: accessToken,
-                refreshToken: refreshToken,
-                profile: profile._json
-              },
-              updatedAt: new Date(),
-              lastLoginAt: new Date()
-            } 
-          }
-        );
-        console.log(`✅ Google user logged in: ${email}`);
       }
 
       return done(null, user);
+
     } catch (err) {
       console.error('❌ Google auth error:', err);
       return done(err, null);
@@ -100,7 +130,8 @@ router.get('/google/callback',
       const user = req.user;
       const token = generateToken(user._id.toString(), 'customer');
       
-      const frontendUrl = process.env.FRONTEND_URL || 'https://teemoreg.github.io/liquorbelle/liquourbelle';
+      // ✅ FIXED: Removed the extra /liquourbelle
+      const frontendUrl = process.env.FRONTEND_URL || 'https://teemoreg.github.io/liquorbelle';
       
       // Redirect to index.html with welcome message
       res.redirect(`${frontendUrl}/index.html?google_auth=success&token=${token}&email=${user.email}&name=${encodeURIComponent(user.name)}&phone=${user.phone || ''}`);

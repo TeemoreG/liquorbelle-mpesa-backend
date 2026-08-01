@@ -8,8 +8,7 @@ const router = express.Router();
 // 1. CONSTANTS & HELPERS
 // ============================================================
 
-// 40km "Priority" bounding box around Nairobi CBD.
-// Used for future-proofing if needed.
+// 40km "Priority" bounding box around Nairobi CBD (for fallback only)
 const NAIROBI_40KM_BOX = '36.40,-1.70,37.20,-0.80';
 
 function patchNairobiRoads(road, suburb) {
@@ -44,38 +43,79 @@ router.post('/reverse', geocodeLimiter, async (req, res) => {
   try {
     let addressData = null;
     let usedService = '';
+    const GOOGLE_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 
-    // ----- OPTION 1: LocationIQ (Primary) -----
-    const LOCATIONIQ_TOKEN = process.env.LOCATIONIQ_API_KEY;
-    if (LOCATIONIQ_TOKEN) {
+    // ----- OPTION 1: Google Maps Geocoding API (Primary) -----
+    if (GOOGLE_API_KEY) {
       try {
-        const url = `https://us1.locationiq.com/v1/reverse?key=${LOCATIONIQ_TOKEN}&lat=${lat}&lon=${lng}&format=json`;
+        const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${GOOGLE_API_KEY}&result_type=street_address|premise|subpremise`;
         const response = await axios.get(url, { timeout: 5000 });
 
-        if (response.data && response.data.address) {
-          const addr = response.data.address;
-          const rawRoad = addr.road || addr.pedestrian || addr.footway || 'Location found';
-          const currentSuburb = addr.suburb || addr.neighbourhood || addr.village || addr.town || addr.city || 'Kenya';
+        if (response.data && response.data.status === 'OK') {
+          const result = response.data.results[0];
+          const addr = result.address_components;
+          
+          // Helper to extract address components
+          const getComponent = (type) => {
+            const comp = addr.find(c => c.types.includes(type));
+            return comp ? comp.long_name : '';
+          };
+
+          const road = getComponent('route') || getComponent('street_address') || 'Location found';
+          const suburb = getComponent('sublocality') || getComponent('neighborhood') || getComponent('locality') || 'Nairobi';
 
           addressData = {
             address: {
-              road: patchNairobiRoads(rawRoad, currentSuburb),
-              suburb: currentSuburb,
-              city: addr.city || addr.town || addr.county || 'Kenya',
-              county: addr.county || addr.state || addr.region || 'Kenya',
-              country: addr.country || 'Kenya'
+              road: patchNairobiRoads(road, suburb),
+              suburb: suburb,
+              city: getComponent('locality') || 'Nairobi',
+              county: getComponent('administrative_area_level_2') || 'Nairobi',
+              country: getComponent('country') || 'Kenya'
             },
-            formatted_address: response.data.display_name,
-            raw: response.data
+            formatted_address: result.formatted_address,
+            raw: result
           };
-          usedService = 'LocationIQ';
+          usedService = 'Google Maps';
+          console.log(`📍 Google Maps reverse found address for ${lat}, ${lng}`);
         }
       } catch (err) {
-        console.log('⚠️ LocationIQ reverse failed:', err.message);
+        console.log('⚠️ Google Maps reverse failed:', err.message);
       }
     }
 
-    // ----- OPTION 2: Geoapify (Fallback) -----
+    // ----- OPTION 2: LocationIQ (Fallback) -----
+    if (!addressData) {
+      const LOCATIONIQ_TOKEN = process.env.LOCATIONIQ_API_KEY;
+      if (LOCATIONIQ_TOKEN) {
+        try {
+          const url = `https://us1.locationiq.com/v1/reverse?key=${LOCATIONIQ_TOKEN}&lat=${lat}&lon=${lng}&format=json`;
+          const response = await axios.get(url, { timeout: 5000 });
+
+          if (response.data && response.data.address) {
+            const addr = response.data.address;
+            const rawRoad = addr.road || addr.pedestrian || addr.footway || 'Location found';
+            const currentSuburb = addr.suburb || addr.neighbourhood || addr.village || addr.town || addr.city || 'Kenya';
+
+            addressData = {
+              address: {
+                road: patchNairobiRoads(rawRoad, currentSuburb),
+                suburb: currentSuburb,
+                city: addr.city || addr.town || addr.county || 'Kenya',
+                county: addr.county || addr.state || addr.region || 'Kenya',
+                country: addr.country || 'Kenya'
+              },
+              formatted_address: response.data.display_name,
+              raw: response.data
+            };
+            usedService = 'LocationIQ';
+          }
+        } catch (err) {
+          console.log('⚠️ LocationIQ reverse failed:', err.message);
+        }
+      }
+    }
+
+    // ----- OPTION 3: Geoapify (Fallback) -----
     if (!addressData) {
       const GEOAPIFY_KEY = process.env.GEOAPIFY_API_KEY;
       if (GEOAPIFY_KEY) {
@@ -107,7 +147,7 @@ router.post('/reverse', geocodeLimiter, async (req, res) => {
       }
     }
 
-    // ----- OPTION 3: Nominatim (Ultimate fallback) -----
+    // ----- OPTION 4: Nominatim (Ultimate fallback) -----
     if (!addressData) {
       try {
         const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&countrycodes=ke`;
@@ -156,6 +196,46 @@ router.post('/reverse', geocodeLimiter, async (req, res) => {
       _service: 'error_fallback',
       _timestamp: new Date().toISOString()
     });
+  }
+});
+
+// ============================================================
+// 3. SECURE PLACES AUTOCOMPLETE (Frontend -> Backend -> Google)
+// ============================================================
+router.post('/places', geocodeLimiter, async (req, res) => {
+  const { input } = req.body;
+
+  if (!input || input.trim().length < 2) {
+    return res.status(400).json({ success: false, message: 'Input must be at least 2 characters' });
+  }
+
+  try {
+    const GOOGLE_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
+    if (!GOOGLE_API_KEY) {
+      console.warn('⚠️ Google Places API key missing in environment variables');
+      return res.status(500).json({ success: false, message: 'Google API key not configured' });
+    }
+
+    // Google Places Autocomplete API
+    const url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(input)}&components=country:ke&key=${GOOGLE_API_KEY}`;
+    const response = await axios.get(url, { timeout: 5000 });
+
+    if (response.data && response.data.status === 'OK') {
+      const predictions = response.data.predictions.map(p => ({
+        description: p.description,
+        place_id: p.place_id,
+        main_text: p.structured_formatting.main_text,
+        secondary_text: p.structured_formatting.secondary_text
+      }));
+
+      return res.json({ success: true, predictions });
+    }
+
+    return res.json({ success: true, predictions: [] });
+
+  } catch (err) {
+    console.error('❌ Google Places API error:', err.message);
+    return res.status(500).json({ success: false, message: 'Failed to fetch places' });
   }
 });
 

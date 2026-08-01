@@ -143,6 +143,12 @@ async function sendMpesaOrderReceivedEmail(orderData) {
     return { success: false, error: 'API key missing' };
   }
 
+  // ✅ SAFETY CHECK: Ensure customerEmail exists before attempting send
+  if (!orderData || !orderData.customerEmail || orderData.customerEmail.trim() === '') {
+    console.warn('⚠️ Skipping email: customerEmail is blank or missing');
+    return { success: false, error: 'Missing customer email' };
+  }
+
   try {
     const {
       orderId,
@@ -157,11 +163,6 @@ async function sendMpesaOrderReceivedEmail(orderData) {
       paymentMethod,
       riderName = 'Our Rider'
     } = orderData;
-
-    if (!customerEmail || !orderId) {
-      console.error('❌ Missing required fields for order email:', { customerEmail, orderId });
-      return { success: false, error: 'Missing required fields' };
-    }
 
     const deliveryText = delivery === 0 ? 'FREE' : `KES ${(delivery || 0).toLocaleString()}`;
     const isPod = paymentMethod && paymentMethod.toLowerCase() === 'pod';
@@ -327,6 +328,12 @@ async function sendOrderDeliveredEmail(orderData) {
     return { success: false, error: 'API key missing' };
   }
 
+  // ✅ SAFETY CHECK: Ensure customerEmail exists before attempting send
+  if (!orderData || !orderData.customerEmail || orderData.customerEmail.trim() === '') {
+    console.warn('⚠️ Skipping delivered email: customerEmail is blank or missing');
+    return { success: false, error: 'Missing customer email' };
+  }
+
   try {
     const { 
       orderId, 
@@ -339,9 +346,9 @@ async function sendOrderDeliveredEmail(orderData) {
       customerEmail 
     } = orderData;
 
-    if (!customerEmail || !orderId) {
-      console.error('❌ Missing required fields for delivered email:', { customerEmail, orderId });
-      return { success: false, error: 'Missing required fields' };
+    if (!orderId) {
+      console.error('❌ Missing required fields for delivered email: orderId missing');
+      return { success: false, error: 'Missing order ID' };
     }
 
     const deliveryText = delivery === 0 ? 'FREE' : `KES ${(delivery || 0).toLocaleString()}`;
