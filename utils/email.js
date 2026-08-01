@@ -18,7 +18,7 @@ function escapeHtml(str) {
   })[m]);
 }
 
-// ==================== HELPER: Send Email ====================
+// ==================== HELPER: Send Email (FIXED - params only if not empty) ====================
 async function sendBrevoEmail(to, subject, htmlContent, params = {}) {
   if (!BREVO_API_KEY) {
     console.warn('⚠️ BREVO_API_KEY not configured - email not sent');
@@ -31,15 +31,22 @@ async function sendBrevoEmail(to, subject, htmlContent, params = {}) {
   }
 
   try {
+    // ✅ Build payload WITHOUT params if empty
+    const emailPayload = {
+      sender: { name: SENDER_NAME, email: SENDER_EMAIL },
+      to: Array.isArray(to) ? to.map(t => typeof t === 'string' ? { email: t } : t) : [{ email: to }],
+      subject: subject,
+      htmlContent: htmlContent
+    };
+
+    // ✅ Only add params if they have data
+    if (params && Object.keys(params).length > 0) {
+      emailPayload.params = params;
+    }
+
     const response = await axios.post(
       'https://api.brevo.com/v3/smtp/email',
-      {
-        sender: { name: SENDER_NAME, email: SENDER_EMAIL },
-        to: Array.isArray(to) ? to.map(t => typeof t === 'string' ? { email: t } : t) : [{ email: to }],
-        subject: subject,
-        htmlContent: htmlContent,
-        params: params
-      },
+      emailPayload,
       {
         headers: { 
           'api-key': BREVO_API_KEY, 
@@ -143,7 +150,6 @@ async function sendMpesaOrderReceivedEmail(orderData) {
     return { success: false, error: 'API key missing' };
   }
 
-  // ✅ SAFETY CHECK: Ensure customerEmail exists before attempting send
   if (!orderData || !orderData.customerEmail || orderData.customerEmail.trim() === '') {
     console.warn('⚠️ Skipping email: customerEmail is blank or missing');
     return { success: false, error: 'Missing customer email' };
@@ -328,7 +334,6 @@ async function sendOrderDeliveredEmail(orderData) {
     return { success: false, error: 'API key missing' };
   }
 
-  // ✅ SAFETY CHECK: Ensure customerEmail exists before attempting send
   if (!orderData || !orderData.customerEmail || orderData.customerEmail.trim() === '') {
     console.warn('⚠️ Skipping delivered email: customerEmail is blank or missing');
     return { success: false, error: 'Missing customer email' };
