@@ -1,5 +1,6 @@
 // ==================== EMAIL SERVICE (Brevo) ====================
 const axios = require('axios');
+const { getDB } = require('../config/database');
 
 // ==================== CONFIG ====================
 const BREVO_API_KEY = process.env.BREVO_API_KEY;
@@ -16,6 +17,26 @@ function escapeHtml(str) {
     '"': '&quot;',
     "'": '&#39;'
   })[m]);
+}
+
+// ==================== HELPER: Get Product Image from DB ====================
+async function getProductImage(productName) {
+  try {
+    const db = getDB();
+    if (!db) return null;
+
+    const product = await db.collection('products').findOne({
+      name: { $regex: new RegExp('^' + productName.trim() + '$', 'i') }
+    });
+
+    if (product && product.image) {
+      return product.image;
+    }
+    return null;
+  } catch (err) {
+    console.warn('Could not fetch product image:', err.message);
+    return null;
+  }
 }
 
 // ==================== HELPER: Send Email ====================
@@ -78,19 +99,19 @@ async function sendOTPEmail(email, otp, type = 'verification', name = 'Customer'
     register: {
       subject: '🔐 Verify Your LiquorBelle Account',
       title: 'Account Verification',
-      color: '#22C55E',
+      color: '#800000',
       message: 'Use the code below to verify your LiquorBelle account.'
     },
     reset: {
       subject: '🔑 Reset Your LiquorBelle PIN',
       title: 'PIN Reset Verification',
-      color: '#f0a500',
+      color: '#800000',
       message: 'Use the code below to reset your LiquorBelle PIN.'
     },
     login: {
       subject: '🔐 Login Verification Code',
       title: 'Login Verification',
-      color: '#3498db',
+      color: '#800000',
       message: 'Use the code below to verify your login attempt.'
     },
     verification: {
@@ -110,15 +131,15 @@ async function sendOTPEmail(email, otp, type = 'verification', name = 'Customer'
 <body style="margin:0;padding:0;background:#0a0a0f;font-family:Arial,sans-serif;">
 <div style="max-width:480px;margin:0 auto;padding:20px;">
 <div style="background:#111118;border-radius:24px;overflow:hidden;border:1px solid #1e1e2c;">
-  <div style="height:3px;background:linear-gradient(90deg,#22C55E,#f0a500,#22C55E);"></div>
+  <div style="height:4px;background:linear-gradient(90deg,#800000,#d4a017,#800000);"></div>
   <div style="background:#071a0f;text-align:center;padding:28px 24px;">
     <img src="https://res.cloudinary.com/dvqjgbdhp/image/upload/v1780905905/WhatsApp_Image_2026-06-04_at_3.41.50_PM_saprsh.jpg" alt="LiquorBelle" style="width:56px;border-radius:14px;margin-bottom:10px;">
-    <div style="font-size:22px;font-weight:900;color:#fff;">Liquor<span style="color:#22C55E;">Belle</span></div>
+    <div style="font-size:22px;font-weight:900;color:#fff;">Liquor<span style="color:#d4a017;">Belle</span></div>
   </div>
   <div style="padding:24px 28px;">
     <h2 style="color:#fff;font-size:16px;">Hello ${escapeHtml(name)},</h2>
     <p style="color:#888;font-size:14px;">${config.message}</p>
-    <div style="background:rgba(34,197,94,0.06);border:2px solid ${config.color};border-radius:12px;padding:20px;text-align:center;margin:18px 0;">
+    <div style="background:rgba(128,0,0,0.06);border:2px solid ${config.color};border-radius:12px;padding:20px;text-align:center;margin:18px 0;">
       <div style="font-size:36px;font-weight:900;color:${config.color};letter-spacing:6px;font-family:monospace;">${otp}</div>
     </div>
     <p style="color:#666;font-size:11px;text-align:center;">⏰ This code expires in 10 minutes</p>
@@ -141,7 +162,7 @@ async function sendOTPEmail(email, otp, type = 'verification', name = 'Customer'
   }
 }
 
-// ==================== SEND ORDER RECEIVED EMAIL (UPDATED) ====================
+// ==================== SEND ORDER RECEIVED EMAIL ====================
 async function sendMpesaOrderReceivedEmail(orderData) {
   if (!BREVO_API_KEY) {
     console.warn('⚠️ BREVO_API_KEY not configured - email not sent');
@@ -170,7 +191,7 @@ async function sendMpesaOrderReceivedEmail(orderData) {
     } = orderData;
 
     const deliveryText = delivery === 0 ? 'FREE' : `KES ${(delivery || 0).toLocaleString()}`;
-    const vatText = vat ? `KES ${(vat || 0).toLocaleString()}` : 'KES 0';
+    const vatText = (vat && vat > 0) ? `KES ${vat.toLocaleString()}` : 'KES 0';
     const isPod = paymentMethod && paymentMethod.toLowerCase() === 'pod';
 
     const subject = isPod
@@ -178,39 +199,46 @@ async function sendMpesaOrderReceivedEmail(orderData) {
       : `✅ Payment Received - ${orderId} - LiquorBelle`;
 
     const headerBadge = isPod
-      ? '📦 ORDER RECEIVED - RIDER ON THE WAY'
-      : '✅ PAYMENT CONFIRMED - ORDER ON THE WAY';
+      ? '📦 ORDER RECEIVED'
+      : '✅ PAYMENT CONFIRMED';
 
     let messageHtml = '';
     if (isPod) {
       messageHtml = `
-        <p style="color:#888;font-size:14px;">Your order has been received! Our rider is on the way to deliver your drinks.</p>
-        <p style="color:#888;font-size:14px;margin-top:12px;">The rider will call <strong style="color:#f0a500;">${escapeHtml(phone || '')}</strong> when approaching your location.</p>
-        <p style="color:#f0a500;font-size:15px;font-weight:800;margin-top:12px;">💰 Please have the exact cash ready upon delivery.</p>
+        <p style="color:#888;font-size:14px;">Your order has been received! Our rider is on the way.</p>
+        <p style="color:#888;font-size:14px;margin-top:12px;">Rider will call <strong style="color:#d4a017;">${escapeHtml(phone || '')}</strong> when approaching.</p>
+        <p style="color:#d4a017;font-size:15px;font-weight:800;margin-top:12px;">💰 Have exact cash ready upon delivery.</p>
       `;
     } else {
       messageHtml = `
-        <p style="color:#888;font-size:14px;">Your M-PESA payment of <strong style="color:#22C55E;">KES ${(total || 0).toLocaleString()}</strong> has been received! 🎉</p>
-        <p style="color:#888;font-size:14px;margin-top:12px;">Your order is now being prepared. Our rider is on the way to deliver your drinks.</p>
-        <p style="color:#888;font-size:14px;">The rider will call <strong style="color:#f0a500;">${escapeHtml(phone || '')}</strong> when approaching your location.</p>
+        <p style="color:#888;font-size:14px;">Your M-PESA payment of <strong style="color:#d4a017;">KES ${(total || 0).toLocaleString()}</strong> has been received!</p>
+        <p style="color:#888;font-size:14px;margin-top:12px;">Your order is being prepared. Rider is on the way.</p>
+        <p style="color:#888;font-size:14px;">Rider will call <strong style="color:#d4a017;">${escapeHtml(phone || '')}</strong> when approaching.</p>
       `;
     }
 
     const totalLabel = isPod ? '💰 TOTAL TO PAY' : '✅ TOTAL PAID';
 
     // ============================================================
-    // BUILD ITEMS HTML WITH IMAGES
+    // BUILD ITEMS HTML WITH REAL IMAGES FROM DATABASE
     // ============================================================
     let itemsHtml = '';
     if (items && items.length > 0) {
-      itemsHtml = items.map(item => {
+      // Get images for all products in parallel
+      const itemsWithImages = await Promise.all(items.map(async (item) => {
+        const productName = item.product_name || item.name || 'Product';
+        const image = await getProductImage(productName);
+        return { ...item, image };
+      }));
+
+      itemsHtml = itemsWithImages.map(item => {
         const productName = item.product_name || item.name || 'Product';
         const productQty = item.quantity || item.qty || 1;
         const productPrice = item.price || 0;
         const productSize = item.size || '750ml';
         const productImage = item.image || '';
         
-        // Build image HTML if exists
+        // Build image HTML - use real image from DB if available
         const imageHtml = productImage 
           ? `<img src="${productImage}" style="width:44px;height:44px;object-fit:cover;border-radius:8px;background:#1a1a26;flex-shrink:0;" onerror="this.style.display='none'">`
           : `<div style="width:44px;height:44px;background:#1a1a26;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><span style="color:#555;font-size:18px;">🍾</span></div>`;
@@ -226,7 +254,7 @@ async function sendMpesaOrderReceivedEmail(orderData) {
                 </div>
               </div>
             </td>
-            <td style="padding:12px 0;text-align:right;color:#f0a500;font-weight:600;">KES ${(productPrice * productQty).toLocaleString()}</td>
+            <td style="padding:12px 0;text-align:right;color:#d4a017;font-weight:600;">KES ${(productPrice * productQty).toLocaleString()}</td>
           </tr>
         `;
       }).join('');
@@ -234,9 +262,6 @@ async function sendMpesaOrderReceivedEmail(orderData) {
       itemsHtml = '<tr><td colspan="2" style="padding:12px;color:#666;text-align:center;">No items</td></tr>';
     }
 
-    // ============================================================
-    // MODERN PROFESSIONAL EMAIL HTML
-    // ============================================================
     const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -248,50 +273,46 @@ async function sendMpesaOrderReceivedEmail(orderData) {
     body{margin:0;padding:0;background:#0a0a0f;font-family:'Inter',-apple-system,BlinkMacSystemFont,Arial,sans-serif;-webkit-font-smoothing:antialiased;}
     .container{max-width:580px;margin:0 auto;padding:20px;}
     .card{background:#111118;border-radius:24px;overflow:hidden;border:1px solid #1e1e2c;box-shadow:0 20px 60px rgba(0,0,0,0.5);}
-    .header-strip{height:4px;background:linear-gradient(90deg,#22C55E,#f0a500,#22C55E);}
+    .header-strip{height:4px;background:linear-gradient(90deg,#800000,#d4a017,#800000);}
     .brand{background:#071a0f;text-align:center;padding:32px 24px 28px;border-bottom:1px solid #1a1a26;}
-    .brand-logo{width:60px;border-radius:16px;margin-bottom:12px;border:2px solid rgba(34,197,94,0.2);}
+    .brand-logo{width:60px;border-radius:16px;margin-bottom:12px;border:2px solid rgba(212,160,23,0.2);}
     .brand-title{font-size:26px;font-weight:900;color:#fff;letter-spacing:-0.5px;}
-    .brand-title span{color:#22C55E;}
+    .brand-title span{color:#d4a017;}
     .brand-sub{color:#666;font-size:11px;margin-top:4px;letter-spacing:0.5px;text-transform:uppercase;}
     .badge-wrap{text-align:center;padding:20px 24px 0;}
     .badge{display:inline-block;padding:8px 20px;border-radius:50px;font-size:11px;font-weight:800;letter-spacing:0.3px;}
-    .badge.pod{color:#f0a500;background:rgba(240,165,0,0.12);border:1px solid rgba(240,165,0,0.2);}
-    .badge.mpesa{color:#22C55E;background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.2);}
+    .badge.pod{color:#d4a017;background:rgba(212,160,23,0.12);border:1px solid rgba(212,160,23,0.2);}
+    .badge.mpesa{color:#d4a017;background:rgba(212,160,23,0.08);border:1px solid rgba(212,160,23,0.15);}
     .content{padding:20px 28px;}
     .content h2{color:#fff;font-size:17px;font-weight:700;margin-bottom:8px;}
     .content p{color:#888;font-size:14px;line-height:1.7;}
     .content p strong{color:#e0e0e0;}
     .table-wrap{padding:0 28px;}
     .table{width:100%;background:#16161f;border-radius:16px;overflow:hidden;}
-    .table th{background:#1a1a26;padding:12px 16px;color:#f0a500;font-weight:800;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;}
+    .table th{background:#1a1a26;padding:12px 16px;color:#d4a017;font-weight:800;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;}
     .table td{padding:12px 16px;border-bottom:1px solid #1c1c28;font-size:13px;}
     .table .row-sub{color:#777;border-bottom:1px solid #1c1c28;}
     .table .row-sub td:last-child{color:#aaa;text-align:right;font-weight:500;}
     .table .row-vat{border-bottom:1px solid #1c1c28;}
     .table .row-vat td{color:#666;font-size:12px;}
     .table .row-vat td:last-child{color:#888;text-align:right;}
-    .table .row-total{background:#0a1a0a;}
+    .table .row-total{background:#0d0d14;}
     .table .row-total td{color:#fff;font-weight:800;font-size:15px;padding:14px 16px;}
-    .table .row-total td:last-child{color:#22C55E;font-size:20px;text-align:right;}
-    .table .row-total.pod td:last-child{color:#f0a500;}
+    .table .row-total td:last-child{color:#d4a017;font-size:20px;text-align:right;}
     .address-box{margin:20px 28px;background:#16161f;border-radius:16px;padding:16px 20px;border:1px solid #1c1c28;}
-    .address-box .label{color:#22C55E;font-weight:800;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;}
+    .address-box .label{color:#d4a017;font-weight:800;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;}
     .address-box .addr{color:#ddd;margin-top:4px;font-size:14px;}
     .address-box .phone{color:#666;margin-top:6px;font-size:13px;}
-    .delivery-box{margin:0 28px 20px;background:rgba(34,197,94,0.06);border-radius:16px;padding:16px 20px;text-align:center;border:1px solid rgba(34,197,94,0.1);}
+    .delivery-box{margin:0 28px 20px;background:rgba(212,160,23,0.06);border-radius:16px;padding:16px 20px;text-align:center;border:1px solid rgba(212,160,23,0.1);}
     .delivery-box .icon{font-size:28px;display:block;margin-bottom:4px;}
-    .delivery-box .time{color:#22C55E;font-weight:800;font-size:14px;}
+    .delivery-box .time{color:#d4a017;font-weight:800;font-size:14px;}
     .delivery-box .note{color:#666;font-size:12px;margin-top:4px;}
     .track-btn-wrap{padding:20px 28px;text-align:center;border-top:1px solid #1a1a26;}
     .track-btn{display:inline-block;background:linear-gradient(135deg,#800000,#5C0000);color:#fff;padding:12px 36px;border-radius:50px;text-decoration:none;font-weight:800;font-size:14px;transition:all 0.3s;border:1px solid rgba(255,255,255,0.05);}
     .track-btn:hover{background:linear-gradient(135deg,#990000,#6B0000);transform:translateY(-2px);box-shadow:0 8px 30px rgba(128,0,0,0.3);}
     .footer{background:#0d0d14;text-align:center;padding:16px 20px;color:#444;font-size:12px;border-top:1px solid #1a1a26;}
-    .footer a{color:#22C55E;text-decoration:none;}
+    .footer a{color:#d4a017;text-decoration:none;}
     .footer a:hover{text-decoration:underline;}
-    .footer .social{display:flex;justify-content:center;gap:12px;margin-top:8px;}
-    .footer .social a{color:#555;font-size:16px;}
-    .footer .social a:hover{color:#22C55E;}
     @media (max-width:480px){
       .content{padding:16px 18px;}
       .table-wrap{padding:0 18px;}
@@ -337,9 +358,9 @@ async function sendMpesaOrderReceivedEmail(orderData) {
       <tr><th colspan="2">📋 Order Items</th></tr>
       ${itemsHtml}
       <tr class="row-sub"><td>Subtotal</td><td>KES ${(subtotal || 0).toLocaleString()}</td></tr>
-      <tr class="row-sub"><td>Delivery Fee</td><td>${deliveryText}</td></tr>
+      <tr class="row-sub"><td>Delivery</td><td>${deliveryText}</td></tr>
       <tr class="row-vat"><td>VAT (16%)</td><td>${vatText}</td></tr>
-      <tr class="row-total ${isPod ? 'pod' : ''}"><td>${totalLabel}</td><td>KES ${(total || 0).toLocaleString()}</td></tr>
+      <tr class="row-total"><td>${totalLabel}</td><td>KES ${(total || 0).toLocaleString()}</td></tr>
     </table>
   </div>
   <div class="address-box">
@@ -349,14 +370,14 @@ async function sendMpesaOrderReceivedEmail(orderData) {
   </div>
   <div class="delivery-box">
     <span class="icon">🏍️</span>
-    <div class="time">Estimated Delivery: 10-45 minutes</div>
+    <div class="time">10-45 min delivery</div>
     <div class="note">Rider will call before arrival · ${escapeHtml(riderName)}</div>
   </div>
   <div class="track-btn-wrap">
-    <a class="track-btn" href="https://teemoreg.github.io/liquorbelle/track-orders.html?email=${encodeURIComponent(customerEmail)}">🔍 Track Order</a>
+    <a class="track-btn" href="https://teemoreg.github.io/liquorbelle/">🏠 Back to Home</a>
   </div>
   <div class="footer">
-    <div>📞 <a href="tel:+254748894443">+254 748 894 443</a> · <a href="https://wa.me/254748894443">WhatsApp 24/7</a></div>
+    <div>📞 <a href="tel:+254748894443">+254 748 894 443</a> · <a href="https://wa.me/254748894443">WhatsApp</a></div>
     <div style="margin-top:6px;font-size:11px;color:#333;">🍷 Drink Responsibly · Over 18 Only</div>
   </div>
 </div>
@@ -379,7 +400,7 @@ async function sendPaymentConfirmationEmail(orderData) {
   return await sendMpesaOrderReceivedEmail(orderData);
 }
 
-// ==================== SEND ORDER DELIVERED EMAIL (UPDATED) ====================
+// ==================== SEND ORDER DELIVERED EMAIL ====================
 async function sendOrderDeliveredEmail(orderData) {
   if (!BREVO_API_KEY) {
     console.warn('⚠️ BREVO_API_KEY not configured - email not sent');
@@ -410,11 +431,20 @@ async function sendOrderDeliveredEmail(orderData) {
     }
 
     const deliveryText = delivery === 0 ? 'FREE' : `KES ${(delivery || 0).toLocaleString()}`;
-    const vatText = vat ? `KES ${(vat || 0).toLocaleString()}` : 'KES 0';
+    const vatText = (vat && vat > 0) ? `KES ${vat.toLocaleString()}` : 'KES 0';
 
+    // ============================================================
+    // BUILD ITEMS HTML WITH REAL IMAGES FROM DATABASE
+    // ============================================================
     let itemsHtml = '';
     if (items && items.length > 0) {
-      itemsHtml = items.map(item => {
+      const itemsWithImages = await Promise.all(items.map(async (item) => {
+        const productName = item.product_name || item.name || 'Product';
+        const image = await getProductImage(productName);
+        return { ...item, image };
+      }));
+
+      itemsHtml = itemsWithImages.map(item => {
         const productName = item.product_name || item.name || 'Product';
         const quantity = item.quantity || item.qty || 1;
         const productPrice = item.price || 0;
@@ -436,7 +466,7 @@ async function sendOrderDeliveredEmail(orderData) {
                 </div>
               </div>
             </td>
-            <td style="padding:8px 0;text-align:right;color:#22C55E;font-size:13px;">KES ${(productPrice * quantity).toLocaleString()}</td>
+            <td style="padding:8px 0;text-align:right;color:#d4a017;font-size:13px;">KES ${(productPrice * quantity).toLocaleString()}</td>
           </tr>
         `;
       }).join('');
@@ -455,43 +485,43 @@ async function sendOrderDeliveredEmail(orderData) {
     body{margin:0;padding:0;background:#0a0a0f;font-family:'Inter',-apple-system,BlinkMacSystemFont,Arial,sans-serif;-webkit-font-smoothing:antialiased;}
     .container{max-width:580px;margin:0 auto;padding:20px;}
     .card{background:#111118;border-radius:24px;overflow:hidden;border:1px solid #1e1e2c;box-shadow:0 20px 60px rgba(0,0,0,0.5);}
-    .header-strip{height:4px;background:linear-gradient(90deg,#22C55E,#f0a500,#22C55E);}
+    .header-strip{height:4px;background:linear-gradient(90deg,#800000,#d4a017,#800000);}
     .brand{background:#071a0f;text-align:center;padding:32px 24px 28px;border-bottom:1px solid #1a1a26;}
-    .brand-logo{width:60px;border-radius:16px;margin-bottom:12px;border:2px solid rgba(34,197,94,0.2);}
+    .brand-logo{width:60px;border-radius:16px;margin-bottom:12px;border:2px solid rgba(212,160,23,0.2);}
     .brand-title{font-size:26px;font-weight:900;color:#fff;letter-spacing:-0.5px;}
-    .brand-title span{color:#22C55E;}
+    .brand-title span{color:#d4a017;}
     .brand-sub{color:#666;font-size:11px;margin-top:4px;letter-spacing:0.5px;text-transform:uppercase;}
     .badge-wrap{text-align:center;padding:20px 24px 0;}
-    .badge{display:inline-block;padding:8px 20px;border-radius:50px;font-size:11px;font-weight:800;color:#22C55E;background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.2);}
+    .badge{display:inline-block;padding:8px 20px;border-radius:50px;font-size:11px;font-weight:800;color:#d4a017;background:rgba(212,160,23,0.08);border:1px solid rgba(212,160,23,0.15);}
     .content{padding:20px 28px;}
     .content h2{color:#fff;font-size:17px;font-weight:700;margin-bottom:8px;}
     .content p{color:#888;font-size:14px;line-height:1.7;}
     .content p strong{color:#e0e0e0;}
     .table-wrap{padding:0 28px;}
     .table{width:100%;background:#16161f;border-radius:16px;overflow:hidden;}
-    .table th{background:#1a1a26;padding:12px 16px;color:#f0a500;font-weight:800;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;}
+    .table th{background:#1a1a26;padding:12px 16px;color:#d4a017;font-weight:800;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;}
     .table td{padding:12px 16px;border-bottom:1px solid #1c1c28;font-size:13px;}
     .table .row-sub td{color:#777;}
     .table .row-sub td:last-child{color:#aaa;text-align:right;font-weight:500;}
     .table .row-vat td{color:#666;font-size:12px;}
     .table .row-vat td:last-child{color:#888;text-align:right;}
-    .table .row-total{background:#0a1a0a;}
+    .table .row-total{background:#0d0d14;}
     .table .row-total td{color:#fff;font-weight:800;font-size:15px;padding:14px 16px;}
-    .table .row-total td:last-child{color:#22C55E;font-size:20px;text-align:right;}
-    .delivery-box{margin:20px 28px;background:rgba(34,197,94,0.06);border-radius:16px;padding:16px 20px;text-align:center;border:1px solid rgba(34,197,94,0.1);}
+    .table .row-total td:last-child{color:#d4a017;font-size:20px;text-align:right;}
+    .delivery-box{margin:20px 28px;background:rgba(212,160,23,0.06);border-radius:16px;padding:16px 20px;text-align:center;border:1px solid rgba(212,160,23,0.1);}
     .delivery-box .icon{font-size:28px;display:block;margin-bottom:4px;}
-    .delivery-box .text{color:#22C55E;font-weight:800;font-size:14px;}
+    .delivery-box .text{color:#d4a017;font-weight:800;font-size:14px;}
     .delivery-box .note{color:#666;font-size:12px;margin-top:4px;}
-    .review-box{margin:0 28px 20px;background:rgba(240,165,0,0.06);border-radius:16px;padding:16px 20px;text-align:center;border:1px solid rgba(240,165,0,0.1);}
-    .review-box .text{color:#f0a500;font-size:14px;font-weight:600;}
+    .review-box{margin:0 28px 20px;background:rgba(212,160,23,0.06);border-radius:16px;padding:16px 20px;text-align:center;border:1px solid rgba(212,160,23,0.1);}
+    .review-box .text{color:#d4a017;font-size:14px;font-weight:600;}
     .review-box .sub{color:#666;font-size:12px;margin-top:4px;}
-    .review-btn{display:inline-block;background:#f0a500;color:#fff;padding:8px 24px;border-radius:50px;text-decoration:none;font-weight:700;font-size:13px;margin-top:8px;transition:all 0.3s;}
-    .review-btn:hover{background:#d49400;transform:translateY(-2px);}
+    .review-btn{display:inline-block;background:#d4a017;color:#fff;padding:8px 24px;border-radius:50px;text-decoration:none;font-weight:700;font-size:13px;margin-top:8px;transition:all 0.3s;}
+    .review-btn:hover{background:#b8940e;transform:translateY(-2px);}
     .btn-wrap{padding:20px 28px;text-align:center;border-top:1px solid #1a1a26;}
-    .btn{display:inline-block;background:linear-gradient(135deg,#22C55E,#16A34A);color:#fff;padding:12px 36px;border-radius:50px;text-decoration:none;font-weight:800;font-size:14px;transition:all 0.3s;border:1px solid rgba(255,255,255,0.05);}
-    .btn:hover{background:linear-gradient(135deg,#16A34A,#15803D);transform:translateY(-2px);box-shadow:0 8px 30px rgba(34,197,94,0.3);}
+    .btn{display:inline-block;background:linear-gradient(135deg,#800000,#5C0000);color:#fff;padding:12px 36px;border-radius:50px;text-decoration:none;font-weight:800;font-size:14px;transition:all 0.3s;border:1px solid rgba(255,255,255,0.05);}
+    .btn:hover{background:linear-gradient(135deg,#990000,#6B0000);transform:translateY(-2px);box-shadow:0 8px 30px rgba(128,0,0,0.3);}
     .footer{background:#0d0d14;text-align:center;padding:16px 20px;color:#444;font-size:12px;border-top:1px solid #1a1a26;}
-    .footer a{color:#22C55E;text-decoration:none;}
+    .footer a{color:#d4a017;text-decoration:none;}
     @media (max-width:480px){
       .content{padding:16px 18px;}
       .table-wrap{padding:0 18px;}
@@ -520,8 +550,8 @@ async function sendOrderDeliveredEmail(orderData) {
   </div>
   <div class="content">
     <h2>Hello ${escapeHtml(customerName || 'Customer')},</h2>
-    <p>Your order has been <strong style="color:#22C55E;">successfully delivered</strong>! 🎉</p>
-    <p style="margin-top:12px;">Thank you for choosing LiquorBelle. We hope you enjoy your drinks!</p>
+    <p>Your order has been <strong style="color:#d4a017;">successfully delivered</strong>! 🎉</p>
+    <p style="margin-top:12px;">Thank you for choosing LiquorBelle. Enjoy your drinks!</p>
     <p style="margin-top:8px;color:#666;font-size:13px;">📱 Rider called: ${escapeHtml(phone || 'N/A')}</p>
   </div>
   <div class="table-wrap">
@@ -537,18 +567,18 @@ async function sendOrderDeliveredEmail(orderData) {
   <div class="delivery-box">
     <span class="icon">🏍️</span>
     <div class="text">Delivered Successfully!</div>
-    <div class="note">Thank you for choosing LiquorBelle · Enjoy responsibly 🍷</div>
+    <div class="note">Thank you · Enjoy responsibly 🍷</div>
   </div>
   <div class="review-box">
     <div class="text">⭐ Enjoyed your order?</div>
-    <div class="sub">Share your experience and help others find us</div>
+    <div class="sub">Share your experience</div>
     <a class="review-btn" href="https://www.google.com/maps/place/Dagoretti+Road,+Nairobi" target="_blank">Write a Review</a>
   </div>
   <div class="btn-wrap">
     <a class="btn" href="https://teemoreg.github.io/liquorbelle/shop.html">🛍️ Shop Again</a>
   </div>
   <div class="footer">
-    <div>📞 <a href="tel:+254748894443">+254 748 894 443</a> · <a href="https://wa.me/254748894443">WhatsApp 24/7</a></div>
+    <div>📞 <a href="tel:+254748894443">+254 748 894 443</a> · <a href="https://wa.me/254748894443">WhatsApp</a></div>
     <div style="margin-top:6px;font-size:11px;color:#333;">🍷 Drink Responsibly · Over 18 Only</div>
   </div>
 </div>
