@@ -386,6 +386,7 @@ router.post('/', requireAdminOrCashier, [
       address, 
       notes, 
       subtotal, 
+      vat,
       delivery, 
       total, 
       items, 
@@ -416,8 +417,9 @@ router.post('/', requireAdminOrCashier, [
       address,
       notes: notes || '',
       subtotal: subtotal || 0,
+      vat: vat || 0,
       delivery: finalDelivery,
-      total: (subtotal || 0) + finalDelivery,
+      total: (subtotal || 0) + finalDelivery + (vat || 0),
       payment_method: paymentMethod || 'M-PESA',
       status: 'pending',
       delivery_area: deliveryArea || '',
@@ -451,7 +453,7 @@ router.post('/', requireAdminOrCashier, [
   }
 });
 
-// ==================== PAY ON DELIVERY (POD) - FIXED WITH EMAIL ====================
+// ==================== PAY ON DELIVERY (POD) - FIXED WITH VAT ====================
 router.post('/pod', orderCreateLimiter, [
   body('customerName').notEmpty().withMessage('Name required'),
   body('customerEmail').isEmail().withMessage('Valid email required'),
@@ -488,6 +490,7 @@ router.post('/pod', orderCreateLimiter, [
       address,
       notes,
       subtotal,
+      vat,
       delivery,
       total,
       items,
@@ -513,6 +516,8 @@ router.post('/pod', orderCreateLimiter, [
       finalDelivery = await calculateDeliveryFee(deliveryArea, subtotal || 0);
     }
 
+    const finalVat = vat || 0;
+
     const order = {
       order_number: finalOrderNumber,
       customer_name: customerName,
@@ -521,8 +526,9 @@ router.post('/pod', orderCreateLimiter, [
       address,
       notes: notes || '',
       subtotal: subtotal || 0,
+      vat: finalVat,
       delivery: finalDelivery,
-      total: (subtotal || 0) + finalDelivery,
+      total: (subtotal || 0) + finalDelivery + finalVat,
       payment_method: 'POD',
       status: 'pending',
       delivery_area: deliveryArea || '',
@@ -538,7 +544,7 @@ router.post('/pod', orderCreateLimiter, [
     const result = await db.collection('orders').insertOne(order);
 
     // ============================================================
-    // 🔥 SEND EMAIL FOR POD ORDER (FIXED - NOW WORKS)
+    // SEND EMAIL FOR POD ORDER WITH VAT
     // ============================================================
     try {
       console.log(`📧 Sending POD email to ${customerEmail} for order ${finalOrderNumber}`);
@@ -549,6 +555,7 @@ router.post('/pod', orderCreateLimiter, [
         items: order.items,
         subtotal: order.subtotal,
         delivery: order.delivery,
+        vat: order.vat,
         total: order.total,
         address: address,
         phone: phone,
@@ -754,6 +761,7 @@ router.put('/:id/status', requireAdmin, [
             items: order.items,
             subtotal: order.subtotal,
             delivery: order.delivery,
+            vat: order.vat || 0,
             total: order.total,
             phone: order.phone
           });
@@ -831,6 +839,7 @@ router.put('/cashier/:id/status', requireAdminOrCashier, [
             items: order.items,
             subtotal: order.subtotal,
             delivery: order.delivery,
+            vat: order.vat || 0,
             total: order.total,
             phone: order.phone
           });
