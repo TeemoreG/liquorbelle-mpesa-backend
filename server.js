@@ -1,478 +1,489 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const compression = require('compression');
-const helmet = require('helmet');
-const morgan = require('morgan');
-const session = require('express-session');
-const passport = require('passport');
-const { connectDB, getDB, closeDB } = require('./config/database');
-const { validateEnv } = require('./config/env');
-const { 
-  generalLimiter, 
-  otpLimiter, 
-  stkLimiter,
-  orderCreateLimiter,
-  adminLimiter,
-  geocodeLimiter,
-  loginLimiter
-} = require('./config/rateLimits');
-const { orderCache, productCache, statsCache } = require('./utils/cache');
-const { loadPasswordsFromDB } = require('./utils/passwords');
+// ==================== EMAIL SERVICE (Brevo) ====================
+const axios = require('axios');
 
-// ==================== VALIDATE ENVIRONMENT ====================
-validateEnv();
+// ==================== CONFIG ====================
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
+const SENDER_EMAIL = 'timblax0@gmail.com';
+const SENDER_NAME = 'LiquorBelle';
 
-const app = express();
-const PORT = process.env.PORT || 10000;
+// ==================== HELPER: Escape HTML ====================
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/[&<>"']/g, (m) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  })[m]);
+}
 
-// ============================================================
-// 1. MIDDLEWARE - MUST BE FIRST (BEFORE ANY ROUTES)
-// ============================================================
-
-// Security middleware
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" },
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      connectSrc: ["'self'", "https://liquorbelle-mpesa-backend.onrender.com", "https://api.brevo.com", "https://sandbox.safaricom.co.ke"],
-      imgSrc: ["'self'", "data:", "https://res.cloudinary.com"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com", "https://fonts.googleapis.com"],
-      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-      fontSrc: ["'self'", "https://fonts.gstatic.com", "https://unpkg.com"],
-    },
-  },
-}));
-
-// Body parser - MUST BE BEFORE ROUTES
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-app.use(compression());
-
-// CORS
-const allowedOrigins = [
-  'https://teemoreg.github.io',
-  'https://liquorbelle-mpesa-backend.onrender.com',
-  'https://liquorbelle.com',
-  'https://www.liquorbelle.com',
-  'http://localhost:3000',
-  'http://localhost:5500',
-  'http://127.0.0.1:5500',
-  'http://localhost:8000',
-  'http://127.0.0.1:8000',
-  'http://localhost:8080',
-  'http://127.0.0.1:8080',
-  'http://localhost:5000',
-  'http://127.0.0.1:5000'
-];
-
-app.use(cors({
-  origin: function(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (origin.match(/^http:\/\/localhost:\d+$/)) {
-      return callback(null, true);
-    }
-    if (origin.match(/^http:\/\/127\.0\.0\.1:\d+$/)) {
-      return callback(null, true);
-    }
-    if (origin === 'null' || origin === 'file://') {
-      return callback(null, true);
-    }
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      return callback(null, true);
-    }
-    console.warn(`⚠️ CORS blocked origin: ${origin}`);
-    callback(new Error('Not allowed by CORS'));
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
-  exposedHeaders: ['Content-Range', 'X-Content-Range']
-}));
-
-// Session & Passport
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'your-secret-key',
-  resave: false,
-  saveUninitialized: false,
-  cookie: { 
-    secure: process.env.NODE_ENV === 'production',
-    maxAge: 24 * 60 * 60 * 1000
+// ==================== HELPER: Send Email (FIXED - params only if not empty) ====================
+async function sendBrevoEmail(to, subject, htmlContent, params = {}) {
+  if (!BREVO_API_KEY) {
+    console.warn('⚠️ BREVO_API_KEY not configured - email not sent');
+    return { success: false, error: 'API key missing' };
   }
-}));
 
-app.use(passport.initialize());
-app.use(passport.session());
-
-// Logging
-app.use(morgan('combined', {
-  skip: (req) => req.path === '/api/health' || req.path === '/'
-}));
-
-app.set('trust proxy', 1);
-
-// ============================================================
-// 2. RATE LIMITING
-// ============================================================
-app.use('/api/', generalLimiter);
-
-app.use('/api/send-email-otp', otpLimiter);
-app.use('/api/auth/send-email-otp', otpLimiter);
-
-app.use('/api/auth/register', loginLimiter);
-app.use('/api/auth/login', loginLimiter);
-app.use('/api/auth/login-phone', loginLimiter);
-app.use('/api/auth/forgot-pin', loginLimiter);
-app.use('/api/auth/reset-pin', loginLimiter);
-
-app.use('/api/stkpush', stkLimiter);
-app.use('/api/orders/pod', orderCreateLimiter);
-app.use('/api/payments/stkpush', stkLimiter);
-
-app.use('/api/db/', adminLimiter);
-app.use('/api/admin/', adminLimiter);
-
-app.use('/api/geocode/', geocodeLimiter);
-
-app.use('/api/auth/admin/login', loginLimiter);
-app.use('/api/auth/cashier/login', loginLimiter);
-
-// ============================================================
-// 3. REQUEST LOGGING (Debug)
-// ============================================================
-app.use((req, res, next) => {
-  if (process.env.NODE_ENV === 'development' && req.path.startsWith('/api/')) {
-    console.log(`📥 ${req.method} ${req.path} - Origin: ${req.headers.origin || 'unknown'}`);
+  if (!to) {
+    console.error('❌ Missing recipient email');
+    return { success: false, error: 'Missing recipient email' };
   }
-  next();
-});
 
-// ============================================================
-// 4. EXPOSE CACHE
-// ============================================================
-app.set('orderCache', orderCache);
-app.set('productCache', productCache);
-app.set('statsCache', statsCache);
+  try {
+    // ✅ Build payload WITHOUT params if empty
+    const emailPayload = {
+      sender: { name: SENDER_NAME, email: SENDER_EMAIL },
+      to: Array.isArray(to) ? to.map(t => typeof t === 'string' ? { email: t } : t) : [{ email: to }],
+      subject: subject,
+      htmlContent: htmlContent
+    };
 
-// ============================================================
-// 5. ROUTES - AFTER ALL MIDDLEWARE
-// ============================================================
+    // ✅ Only add params if they have data
+    if (params && Object.keys(params).length > 0) {
+      emailPayload.params = params;
+    }
 
-// Auth routes
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/auth', require('./routes/google-auth'));
+    const response = await axios.post(
+      'https://api.brevo.com/v3/smtp/email',
+      emailPayload,
+      {
+        headers: { 
+          'api-key': BREVO_API_KEY, 
+          'Content-Type': 'application/json' 
+        },
+        timeout: 10000
+      }
+    );
 
-// Admin auth routes
-app.use('/api/admin', require('./routes/admin-auth'));
+    console.log(`✅ Email sent to ${Array.isArray(to) ? to.map(t => t.email || t).join(', ') : to}`);
+    return { success: true, data: response.data };
+  } catch (err) {
+    console.error('❌ Email error:', err.response?.data?.message || err.message);
+    return { success: false, error: err.response?.data?.message || err.message };
+  }
+}
 
-// Product routes
-app.use('/api/db/products', require('./routes/products'));
+// ==================== SEND OTP EMAIL ====================
+async function sendOTPEmail(email, otp, type = 'verification', name = 'Customer') {
+  if (!BREVO_API_KEY) {
+    console.warn('⚠️ BREVO_API_KEY not configured - OTP email not sent');
+    return { success: false, error: 'API key missing' };
+  }
 
-// Order routes
-app.use('/api/db/orders', require('./routes/orders'));
-app.use('/api/orders', require('./routes/orders'));
+  if (!email || !otp) {
+    console.error('❌ Missing email or OTP for OTP email');
+    return { success: false, error: 'Missing email or OTP' };
+  }
 
-// Payment routes (M-PESA)
-app.use('/api', require('./routes/payments'));
-app.use('/api/payments', require('./routes/payments'));
-
-// Admin routes
-app.use('/api/admin', require('./routes/admin'));
-
-// Customer routes (profile, favorites, orders)
-app.use('/api/customers', require('./routes/customers'));
-
-// OTP routes (email only)
-app.use('/api', require('./routes/otp'));
-
-// Geocode routes
-app.use('/api/geocode', require('./routes/geocode'));
-
-// ✅ Delivery routes (Public)
-app.use('/api', require('./routes/delivery'));
-
-// ✅ Delivery routes (Admin - Added to handle admin settings and zones)
-app.use('/api/admin', require('./routes/delivery'));
-
-// Categories routes
-app.use('/api/categories', require('./routes/categories'));
-
-// Order tracking routes
-app.use('/api/orders/track', require('./routes/order-tracking'));
-
-// ❌ DELETED: Delivery zones routes (File removed, merged into delivery.js)
-
-// ============================================================
-// 6. HEALTH CHECK & ROOT
-// ============================================================
-app.get('/api/health', (req, res) => {
-  const db = getDB();
-  const health = {
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    memory: process.memoryUsage(),
-    database: db ? 'connected' : 'disconnected',
-    cache: {
-      orders: orderCache.keys().length,
-      products: productCache.keys().length,
-      stats: statsCache.keys().length
+  const typeConfig = {
+    register: {
+      subject: '🔐 Verify Your LiquorBelle Account',
+      title: 'Account Verification',
+      color: '#22C55E',
+      message: 'Use the code below to verify your LiquorBelle account.'
     },
-    environment: process.env.NODE_ENV || 'development',
-    version: '1.0.0',
-    cors: {
-      allowedOrigins: allowedOrigins,
-      origin: req.headers.origin || 'none'
+    reset: {
+      subject: '🔑 Reset Your LiquorBelle PIN',
+      title: 'PIN Reset Verification',
+      color: '#f0a500',
+      message: 'Use the code below to reset your LiquorBelle PIN.'
+    },
+    login: {
+      subject: '🔐 Login Verification Code',
+      title: 'Login Verification',
+      color: '#3498db',
+      message: 'Use the code below to verify your login attempt.'
+    },
+    verification: {
+      subject: 'Your LiquorBelle Verification Code',
+      title: 'Verification Code',
+      color: '#800000',
+      message: 'Use the code below to verify your request.'
     }
   };
-  res.json(health);
-});
 
-app.get('/health', (req, res) => {
-  res.status(200).send('OK');
-});
+  const config = typeConfig[type] || typeConfig.verification;
 
-app.head('/health', (req, res) => {
-  res.status(200).send('OK');
-});
-
-app.get('/ping', (req, res) => {
-  res.status(200).send('pong');
-});
-
-app.get('/', (req, res) => {
-  res.json({
-    status: 'ok',
-    message: '🍾 LiquorBelle API is running',
-    version: '1.0.0',
-    timestamp: new Date().toISOString(),
-    endpoints: {
-      health: '/api/health',
-      products: '/api/db/products',
-      orders: '/api/db/orders',
-      auth: '/api/auth',
-      admin: '/api/admin'
-    },
-    cors: {
-      allowedOrigins: allowedOrigins
-    }
-  });
-});
-
-// ============================================================
-// 7. ERROR HANDLING - MUST BE AFTER ROUTES
-// ============================================================
-
-// 404 Handler
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: 'Endpoint not found',
-    path: req.path,
-    method: req.method,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Global error handler
-app.use((err, req, res, next) => {
-  console.error('❌ Server error:', {
-    message: err.message,
-    stack: err.stack,
-    path: req.path,
-    method: req.method,
-    body: req.body,
-    query: req.query,
-    params: req.params
-  });
-  
-  if (err.name === 'ValidationError') {
-    return res.status(400).json({
-      success: false,
-      message: 'Validation Error',
-      errors: err.errors,
-      timestamp: new Date().toISOString()
-    });
-  }
-  
-  if (err.name === 'MongoError' || err.name === 'MongoServerError') {
-    return res.status(500).json({
-      success: false,
-      message: 'Database Error',
-      error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error',
-      timestamp: new Date().toISOString()
-    });
-  }
-  
-  const statusCode = err.status || 500;
-  res.status(statusCode).json({
-    success: false,
-    message: err.message || 'Internal server error',
-    ...(process.env.NODE_ENV === 'development' && { 
-      stack: err.stack,
-      path: req.path,
-      method: req.method
-    }),
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ============================================================
-// 8. START SERVER
-// ============================================================
-async function startServer() {
   try {
-    console.log('🔄 Connecting to MongoDB...');
-    await connectDB();
-    console.log('✅ MongoDB connected successfully');
-    
-    await loadPasswordsFromDB();
-    console.log('✅ Password hashes loaded');
+    const html = `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>${config.subject}</title></head>
+<body style="margin:0;padding:0;background:#0a0a0f;font-family:Arial,sans-serif;">
+<div style="max-width:480px;margin:0 auto;padding:20px;">
+<div style="background:#111118;border-radius:24px;overflow:hidden;border:1px solid #1e1e2c;">
+  <div style="height:3px;background:linear-gradient(90deg,#22C55E,#f0a500,#22C55E);"></div>
+  <div style="background:#071a0f;text-align:center;padding:28px 24px;">
+    <img src="https://res.cloudinary.com/dvqjgbdhp/image/upload/v1780905905/WhatsApp_Image_2026-06-04_at_3.41.50_PM_saprsh.jpg" alt="LiquorBelle" style="width:56px;border-radius:14px;margin-bottom:10px;">
+    <div style="font-size:22px;font-weight:900;color:#fff;">Liquor<span style="color:#22C55E;">Belle</span></div>
+  </div>
+  <div style="padding:24px 28px;">
+    <h2 style="color:#fff;font-size:16px;">Hello ${escapeHtml(name)},</h2>
+    <p style="color:#888;font-size:14px;">${config.message}</p>
+    <div style="background:rgba(34,197,94,0.06);border:2px solid ${config.color};border-radius:12px;padding:20px;text-align:center;margin:18px 0;">
+      <div style="font-size:36px;font-weight:900;color:${config.color};letter-spacing:6px;font-family:monospace;">${otp}</div>
+    </div>
+    <p style="color:#666;font-size:11px;text-align:center;">⏰ This code expires in 10 minutes</p>
+  </div>
+  <div style="background:#0d0d14;text-align:center;padding:14px;color:#444;font-size:11px;">
+    If you didn't request this, please ignore this email.
+  </div>
+</div>
+</div>
+</body>
+</html>`;
 
-    // Auto-clear stats cache daily
-    setInterval(() => {
-      statsCache.del('stats_daily');
-      statsCache.del('stats_weekly');
-      statsCache.del('stats_monthly');
-      statsCache.del('legacy_stats');
-      statsCache.del('category_stats');
-      console.log('✅ Stats cache cleared (daily refresh)');
-    }, 24 * 60 * 60 * 1000);
-
-    // Auto-clear OTPs every hour
-    setInterval(async () => {
-      try {
-        const db = getDB();
-        if (db) {
-          const result = await db.collection('otps').deleteMany({
-            created_at: { $lt: new Date(Date.now() - 60 * 60 * 1000) }
-          });
-          if (result.deletedCount > 0) {
-            console.log(`✅ Cleared ${result.deletedCount} expired OTPs`);
-          }
-        }
-      } catch (err) {
-        // Silently fail
-      }
-    }, 60 * 60 * 1000);
-
-    // Auto-clear expired sessions every 12 hours
-    setInterval(async () => {
-      try {
-        const db = getDB();
-        if (db) {
-          const result = await db.collection('sessions').deleteMany({
-            expiresAt: { $lt: new Date() }
-          });
-          if (result.deletedCount > 0) {
-            console.log(`✅ Cleared ${result.deletedCount} expired sessions`);
-          }
-        }
-      } catch (err) {
-        // Silently fail
-      }
-    }, 12 * 60 * 60 * 1000);
-
-    const server = app.listen(PORT, '0.0.0.0', () => {
-      console.log(`
-╔══════════════════════════════════════════════════════════════╗
-║                                                              ║
-║   🍾 LIQUORBELLE BACKEND SERVER                            ║
-║                                                              ║
-║   Port: ${PORT}                                              ║
-║   Database: ✅ Connected                                    ║
-║   Environment: ${process.env.NODE_ENV || 'development'}      ║
-║   Uptime: ${process.uptime()}s                              ║
-║                                                              ║
-║   Email: ${process.env.BREVO_API_KEY ? '✅ Enabled' : '❌ Disabled'}  ║
-║   M-PESA: ${process.env.CONSUMER_KEY ? '✅ Enabled' : '❌ Disabled'}  ║
-║   Google Sheets: ${process.env.GOOGLE_SHEETS_API_KEY ? '✅ Enabled' : '❌ Disabled'} ║
-║                                                              ║
-║   Auth: PIN-based with Email OTP                            ║
-║   CORS: ${allowedOrigins.length} origins allowed              ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝
-      `);
-      
-      console.log(`📡 Server is ready at http://localhost:${PORT}`);
-      console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
-      console.log(`🌐 CORS allowed origins: ${allowedOrigins.join(', ')}`);
-    });
-
-    server.timeout = 120000;
-    server.keepAliveTimeout = 120000;
-    server.headersTimeout = 120000;
-
-    return server;
+    const result = await sendBrevoEmail(email, config.subject, html);
+    console.log(`✅ OTP email sent to ${email} (${type})`);
+    return result;
 
   } catch (err) {
-    console.error('❌ Failed to start server:', err.message);
-    console.error('Stack:', err.stack);
-    throw err;
+    console.error('❌ OTP email error:', err.response?.data?.message || err.message);
+    return { success: false, error: err.response?.data?.message || err.message };
   }
 }
 
-// ============================================================
-// 9. RETRY MECHANISM
-// ============================================================
-async function startServerWithRetry() {
-  let retries = 0;
-  const maxRetries = 5;
-  
-  while (retries < maxRetries) {
-    try {
-      await startServer();
-      return;
-    } catch (err) {
-      retries++;
-      console.log(`❌ Start attempt ${retries} failed. Retrying in ${retries * 5} seconds...`);
-      await new Promise(resolve => setTimeout(resolve, retries * 5000));
-    }
+// ==================== SEND ORDER RECEIVED EMAIL ====================
+async function sendMpesaOrderReceivedEmail(orderData) {
+  if (!BREVO_API_KEY) {
+    console.warn('⚠️ BREVO_API_KEY not configured - email not sent');
+    return { success: false, error: 'API key missing' };
   }
-  
-  console.error('❌ Failed to start server after multiple attempts');
-  process.exit(1);
-}
 
-// ============================================================
-// 10. GRACEFUL SHUTDOWN
-// ============================================================
-let isShuttingDown = false;
+  if (!orderData || !orderData.customerEmail || orderData.customerEmail.trim() === '') {
+    console.warn('⚠️ Skipping email: customerEmail is blank or missing');
+    return { success: false, error: 'Missing customer email' };
+  }
 
-async function gracefulShutdown(signal) {
-  if (isShuttingDown) return;
-  isShuttingDown = true;
-  
-  console.log(`🛑 ${signal} received, starting graceful shutdown...`);
-  
   try {
-    await closeDB();
-    console.log('✅ Database connection closed');
-    console.log('👋 Shutdown complete');
-    process.exit(0);
+    const {
+      orderId,
+      customerName,
+      items,
+      subtotal,
+      delivery,
+      total,
+      address,
+      phone,
+      customerEmail,
+      paymentMethod,
+      riderName = 'Our Rider'
+    } = orderData;
+
+    const deliveryText = delivery === 0 ? 'FREE' : `KES ${(delivery || 0).toLocaleString()}`;
+    const isPod = paymentMethod && paymentMethod.toLowerCase() === 'pod';
+
+    const subject = isPod
+      ? `📦 Order Received - ${orderId} - LiquorBelle`
+      : `✅ Payment Received - ${orderId} - LiquorBelle`;
+
+    const headerBadge = isPod
+      ? '📦 ORDER RECEIVED - RIDER ON THE WAY'
+      : '✅ PAYMENT CONFIRMED - ORDER ON THE WAY';
+
+    let messageHtml = '';
+    if (isPod) {
+      messageHtml = `
+        <p style="color:#888;font-size:14px;">Your order has been received! Our rider is on the way to deliver your drinks.</p>
+        <p style="color:#888;font-size:14px;margin-top:12px;">The rider will call <strong style="color:#f0a500;">${escapeHtml(phone || '')}</strong> when approaching your location.</p>
+        <p style="color:#f0a500;font-size:15px;font-weight:800;margin-top:12px;">💰 Please have the exact cash ready upon delivery.</p>
+      `;
+    } else {
+      messageHtml = `
+        <p style="color:#888;font-size:14px;">Your M-PESA payment of <strong style="color:#22C55E;">KES ${(total || 0).toLocaleString()}</strong> has been received! 🎉</p>
+        <p style="color:#888;font-size:14px;margin-top:12px;">Your order is now being prepared. Our rider is on the way to deliver your drinks.</p>
+        <p style="color:#888;font-size:14px;">The rider will call <strong style="color:#f0a500;">${escapeHtml(phone || '')}</strong> when approaching your location.</p>
+      `;
+    }
+
+    const totalLabel = isPod ? '💰 TOTAL TO PAY' : '✅ TOTAL PAID';
+
+    let itemsHtml = '';
+    if (items && items.length > 0) {
+      itemsHtml = items.map(item => {
+        const productName = item.product_name || item.name || 'Product';
+        const productQty = item.quantity || item.qty || 1;
+        const productPrice = item.price || 0;
+        const productSize = item.size || '750ml';
+        return `
+          <tr style="border-bottom:1px solid #1c1c28;">
+            <td style="padding:12px 0;">
+              <span style="color:#e0e0e0;">${escapeHtml(productName)} x${productQty}</span><br>
+              <span style="color:#555;font-size:11px;">${escapeHtml(productSize)}</span>
+            </td>
+            <td style="padding:12px 0;text-align:right;color:#f0a500;">KES ${(productPrice * productQty).toLocaleString()}</td>
+          </tr>
+        `;
+      }).join('');
+    } else {
+      itemsHtml = '<tr><td colspan="2" style="padding:12px;color:#666;text-align:center;">No items</td></tr>';
+    }
+
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${subject}</title>
+  <style>
+    body { margin:0; padding:0; background:#0a0a0f; font-family: 'Inter', -apple-system, Arial, sans-serif; }
+    .container { max-width:580px; margin:0 auto; padding:20px; }
+    .card { background:#111118; border-radius:24px; overflow:hidden; border:1px solid #1e1e2c; }
+    .header-strip { height:4px; background:linear-gradient(90deg, #22C55E, #f0a500, #22C55E); }
+    .brand { background:#071a0f; text-align:center; padding:32px 24px; }
+    .brand-logo { width:60px; border-radius:16px; margin-bottom:12px; }
+    .brand-title { font-size:26px; font-weight:900; color:#fff; }
+    .brand-title span { color:#22C55E; }
+    .brand-sub { color:#666; font-size:11px; }
+    .badge-wrap { text-align:center; padding:20px 24px 0; }
+    .badge { display:inline-block; background:rgba(34,197,94,0.12); padding:8px 20px; border-radius:50px; font-size:11px; font-weight:800; color:#22C55E; }
+    .badge.pod { color:#f0a500; background:rgba(240,165,0,0.12); }
+    .content { padding:20px 28px; }
+    .content h2 { color:#fff; font-size:18px; }
+    .content p { color:#888; font-size:14px; line-height:1.6; }
+    .table-wrap { padding:0 28px; }
+    .table { width:100%; background:#16161f; border-radius:16px; overflow:hidden; }
+    .table th { background:#1a1a26; padding:12px 16px; color:#f0a500; font-weight:800; text-align:left; }
+    .table td { padding:12px 16px; border-bottom:1px solid #1c1c28; }
+    .table .row-sub { color:#777; border-bottom:1px solid #1c1c28; }
+    .table .row-sub td:last-child { color:#ccc; text-align:right; }
+    .table .row-total { background:#0a1a0a; }
+    .table .row-total td { color:#fff; font-weight:800; }
+    .table .row-total td:last-child { color:#22C55E; font-size:20px; text-align:right; }
+    .table .row-total.pod td:last-child { color:#f0a500; }
+    .address-box { margin:20px 28px; background:#16161f; border-radius:16px; padding:16px; }
+    .address-box .label { color:#22C55E; font-weight:800; }
+    .address-box .addr { color:#ddd; margin-top:4px; }
+    .address-box .phone { color:#666; margin-top:8px; }
+    .delivery-box { margin:0 28px 20px; background:rgba(34,197,94,0.08); border-radius:16px; padding:16px; text-align:center; }
+    .delivery-box .icon { font-size:28px; }
+    .delivery-box .time { color:#22C55E; font-weight:800; }
+    .delivery-box .note { color:#666; }
+    .track-btn-wrap { padding:20px 28px; text-align:center; }
+    .track-btn { display:inline-block; background:linear-gradient(135deg, #800000, #5C0000); color:#fff; padding:12px 32px; border-radius:50px; text-decoration:none; font-weight:800; }
+    .footer { background:#0d0d14; text-align:center; padding:16px; color:#444; font-size:13px; }
+    .footer a { color:#22C55E; text-decoration:none; }
+    @media (max-width:480px) { .content { padding:16px 18px; } .table-wrap { padding:0 18px; } .address-box { margin:16px 18px; } .delivery-box { margin:0 18px 16px; } }
+  </style>
+</head>
+<body>
+<div class="container">
+<div class="card">
+  <div class="header-strip"></div>
+  <div class="brand">
+    <img class="brand-logo" src="https://res.cloudinary.com/dvqjgbdhp/image/upload/v1780905905/WhatsApp_Image_2026-06-04_at_3.41.50_PM_saprsh.jpg" alt="LiquorBelle">
+    <div class="brand-title">Liquor<span>Belle</span></div>
+    <div class="brand-sub">Nairobi's Finest · 24/7 Delivery</div>
+  </div>
+  <div class="badge-wrap">
+    <span class="badge ${isPod ? 'pod' : ''}">${headerBadge}</span>
+  </div>
+  <div class="content">
+    <h2>Hello ${escapeHtml(customerName || 'Customer')},</h2>
+    ${messageHtml}
+  </div>
+  <div class="table-wrap">
+    <table class="table">
+      <tr><th colspan="2">📋 ORDER ITEMS</th></tr>
+      ${itemsHtml}
+      <tr class="row-sub"><td>Subtotal</td><td>KES ${(subtotal || 0).toLocaleString()}</td></tr>
+      <tr class="row-sub"><td>Delivery Fee</td><td>${deliveryText}</td></tr>
+      <tr class="row-total ${isPod ? 'pod' : ''}"><td>${totalLabel}</td><td>KES ${(total || 0).toLocaleString()}</td></tr>
+    </table>
+  </div>
+  <div class="address-box">
+    <div class="label">📍 DELIVERY ADDRESS</div>
+    <div class="addr">${escapeHtml(address || '')}</div>
+    <div class="phone">📱 ${escapeHtml(phone || '')}</div>
+  </div>
+  <div class="delivery-box">
+    <div class="icon">🏍️</div>
+    <div class="time">Estimated Delivery: 10-45 minutes</div>
+    <div class="note">Rider will call before arrival · ${escapeHtml(riderName)}</div>
+  </div>
+  <div class="track-btn-wrap">
+    <a class="track-btn" href="https://teemoreg.github.io/liquorbelle/track-orders.html?email=${encodeURIComponent(customerEmail)}">🔍 Track Order</a>
+  </div>
+  <div class="footer">
+    📞 +254 748 894 443 · <a href="https://wa.me/254748894443">WhatsApp 24/7</a>
+  </div>
+</div>
+</div>
+</body>
+</html>`;
+
+    const result = await sendBrevoEmail(customerEmail, subject, html);
+    console.log(`✅ Order email sent to ${customerEmail} (${isPod ? 'POD' : 'M-PESA'})`);
+    return result;
+
   } catch (err) {
-    console.error('❌ Error during shutdown:', err);
-    process.exit(1);
+    console.error('❌ Order email error:', err.message);
+    return { success: false, error: err.message };
   }
 }
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+// ==================== SEND PAYMENT CONFIRMATION EMAIL ====================
+async function sendPaymentConfirmationEmail(orderData) {
+  return await sendMpesaOrderReceivedEmail(orderData);
+}
 
-process.on('uncaughtException', (err) => {
-  console.error('❌ Uncaught Exception:', err.message);
-  console.error('Stack:', err.stack);
-});
+// ==================== SEND ORDER DELIVERED EMAIL ====================
+async function sendOrderDeliveredEmail(orderData) {
+  if (!BREVO_API_KEY) {
+    console.warn('⚠️ BREVO_API_KEY not configured - email not sent');
+    return { success: false, error: 'API key missing' };
+  }
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise);
-  console.error('Reason:', reason);
-});
+  if (!orderData || !orderData.customerEmail || orderData.customerEmail.trim() === '') {
+    console.warn('⚠️ Skipping delivered email: customerEmail is blank or missing');
+    return { success: false, error: 'Missing customer email' };
+  }
 
-// ============================================================
-// 11. START
-// ============================================================
-startServerWithRetry();
+  try {
+    const { 
+      orderId, 
+      customerName, 
+      items, 
+      total, 
+      subtotal, 
+      delivery, 
+      phone, 
+      customerEmail 
+    } = orderData;
 
-module.exports = app;
+    if (!orderId) {
+      console.error('❌ Missing required fields for delivered email: orderId missing');
+      return { success: false, error: 'Missing order ID' };
+    }
+
+    const deliveryText = delivery === 0 ? 'FREE' : `KES ${(delivery || 0).toLocaleString()}`;
+
+    let itemsHtml = '';
+    if (items && items.length > 0) {
+      itemsHtml = items.map(item => {
+        const productName = item.product_name || item.name || 'Product';
+        const quantity = item.quantity || item.qty || 1;
+        const productPrice = item.price || 0;
+        return `
+          <tr style="border-bottom:1px solid #1c1c28;">
+            <td style="padding:8px 0;color:#ddd;font-size:14px;">${escapeHtml(productName)} x${quantity}</td>
+            <td style="padding:8px 0;text-align:right;color:#22C55E;font-size:14px;">KES ${(productPrice * quantity).toLocaleString()}</td>
+          </tr>
+        `;
+      }).join('');
+    } else {
+      itemsHtml = '<tr><td colspan="2" style="padding:12px;color:#666;text-align:center;">No items</td></tr>';
+    }
+
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>✅ Order Delivered - ${orderId} - LiquorBelle</title>
+  <style>
+    body { margin:0; padding:0; background:#0a0a0f; font-family: 'Inter', Arial, sans-serif; }
+    .container { max-width:580px; margin:0 auto; padding:20px; }
+    .card { background:#111118; border-radius:24px; overflow:hidden; border:1px solid #1e1e2c; }
+    .header-strip { height:4px; background:linear-gradient(90deg, #22C55E, #f0a500, #22C55E); }
+    .brand { background:#071a0f; text-align:center; padding:32px 24px; }
+    .brand-logo { width:60px; border-radius:16px; margin-bottom:12px; }
+    .brand-title { font-size:26px; font-weight:900; color:#fff; }
+    .brand-title span { color:#22C55E; }
+    .brand-sub { color:#666; font-size:11px; }
+    .badge-wrap { text-align:center; padding:20px 24px 0; }
+    .badge { display:inline-block; background:rgba(34,197,94,0.12); color:#22C55E; padding:8px 20px; border-radius:50px; font-size:11px; font-weight:800; }
+    .content { padding:20px 28px; }
+    .content h2 { color:#fff; font-size:18px; }
+    .content p { color:#888; font-size:14px; line-height:1.6; }
+    .table-wrap { padding:0 28px; }
+    .table { width:100%; background:#16161f; border-radius:16px; overflow:hidden; }
+    .table th { background:#1a1a26; padding:12px 16px; color:#f0a500; font-weight:800; text-align:left; font-size:13px; }
+    .table td { padding:12px 16px; border-bottom:1px solid #1c1c28; }
+    .table .row-sub td { color:#777; }
+    .table .row-sub td:last-child { color:#ccc; text-align:right; }
+    .table .row-total { background:#0a1a0a; }
+    .table .row-total td { color:#fff; font-weight:800; font-size:16px; }
+    .table .row-total td:last-child { color:#22C55E; font-size:20px; text-align:right; }
+    .delivery-box { margin:20px 28px; background:rgba(34,197,94,0.08); border-radius:16px; padding:16px; text-align:center; }
+    .delivery-box .icon { font-size:28px; }
+    .delivery-box .text { color:#22C55E; font-weight:800; }
+    .delivery-box .note { color:#666; font-size:13px; margin-top:4px; }
+    .btn-wrap { padding:20px 28px; text-align:center; }
+    .btn { display:inline-block; background:#22C55E; color:#fff; padding:12px 32px; border-radius:50px; text-decoration:none; font-weight:800; }
+    .btn:hover { background:#16A34A; }
+    .footer { background:#0d0d14; text-align:center; padding:16px; color:#444; font-size:13px; }
+    .footer a { color:#22C55E; text-decoration:none; }
+    .review-box { margin:0 28px 20px; background:rgba(240,165,0,0.08); border-radius:16px; padding:16px; text-align:center; border:1px solid rgba(240,165,0,0.2); }
+    .review-box .text { color:#f0a500; font-size:14px; }
+    .review-box .sub { color:#666; font-size:12px; margin-top:4px; }
+    .review-btn { display:inline-block; background:#f0a500; color:#fff; padding:8px 24px; border-radius:50px; text-decoration:none; font-weight:700; font-size:13px; margin-top:8px; }
+    @media (max-width:480px) { .content { padding:16px 18px; } .table-wrap { padding:0 18px; } .delivery-box { margin:16px 18px; } .review-box { margin:0 18px 16px; } .btn-wrap { padding:16px 18px; } }
+  </style>
+</head>
+<body>
+<div class="container">
+<div class="card">
+  <div class="header-strip"></div>
+  <div class="brand">
+    <img class="brand-logo" src="https://res.cloudinary.com/dvqjgbdhp/image/upload/v1780905905/WhatsApp_Image_2026-06-04_at_3.41.50_PM_saprsh.jpg" alt="LiquorBelle">
+    <div class="brand-title">Liquor<span>Belle</span></div>
+    <div class="brand-sub">Nairobi's Finest · 24/7 Delivery</div>
+  </div>
+  <div class="badge-wrap">
+    <span class="badge">✅ ORDER DELIVERED</span>
+  </div>
+  <div class="content">
+    <h2>Hello ${escapeHtml(customerName || 'Customer')},</h2>
+    <p>Your order has been <strong style="color:#22C55E;">successfully delivered</strong>! 🎉</p>
+    <p style="margin-top:12px;">Thank you for choosing LiquorBelle. We hope you enjoy your drinks!</p>
+    <p style="margin-top:8px;color:#666;font-size:13px;">📱 Rider called: ${escapeHtml(phone || 'N/A')}</p>
+  </div>
+  <div class="table-wrap">
+    <table class="table">
+      <tr><th colspan="2">📋 ORDER SUMMARY</th></tr>
+      ${itemsHtml}
+      ${subtotal !== undefined ? `<tr class="row-sub"><td>Subtotal</td><td>KES ${(subtotal || 0).toLocaleString()}</td></tr>` : ''}
+      ${delivery !== undefined ? `<tr class="row-sub"><td>Delivery</td><td>${deliveryText}</td></tr>` : ''}
+      <tr class="row-total"><td>Total</td><td>KES ${(total || 0).toLocaleString()}</td></tr>
+    </table>
+  </div>
+  <div class="delivery-box">
+    <div class="icon">🏍️</div>
+    <div class="text">Delivered Successfully!</div>
+    <div class="note">Thank you for choosing LiquorBelle · Enjoy responsibly 🍷</div>
+  </div>
+  <div class="review-box">
+    <div class="text">⭐ Enjoyed your order?</div>
+    <div class="sub">Share your experience and help others find us</div>
+    <a class="review-btn" href="https://www.google.com/maps/place/Dagoretti+Road,+Nairobi" target="_blank">Write a Review</a>
+  </div>
+  <div class="btn-wrap">
+    <a class="btn" href="https://teemoreg.github.io/liquorbelle/shop.html">🛍️ Shop Again</a>
+  </div>
+  <div class="footer">
+    📞 +254 748 894 443 · <a href="https://wa.me/254748894443">WhatsApp 24/7</a>
+  </div>
+</div>
+</div>
+</body>
+</html>`;
+
+    const result = await sendBrevoEmail(customerEmail, `✅ Order Delivered - ${orderId} - LiquorBelle`, html);
+    console.log(`✅ Order delivered email sent to ${customerEmail}`);
+    return result;
+
+  } catch (err) {
+    console.error('❌ Email error:', err.response?.data?.message || err.message);
+    return { success: false, error: err.response?.data?.message || err.message };
+  }
+}
+
+// ==================== EXPORT ====================
+module.exports = {
+  sendBrevoEmail,
+  sendOTPEmail,
+  sendMpesaOrderReceivedEmail,
+  sendPaymentConfirmationEmail,
+  sendOrderDeliveredEmail
+};
