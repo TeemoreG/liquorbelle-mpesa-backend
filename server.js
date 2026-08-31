@@ -26,7 +26,9 @@ validateEnv();
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// ============================================================
 // 1. MIDDLEWARE 
+// ============================================================
 
 // Security middleware
 app.use(helmet({
@@ -34,28 +36,9 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      connectSrc: [
-        "'self'", 
-        "https://liquorbelle-mpesa-backend.onrender.com", 
-        "https://api.brevo.com", 
-        "https://sandbox.safaricom.co.ke",
-        "https://api.liquorbelle.co.ke"
-      ],
+      connectSrc: ["'self'", "https://liquorbelle-mpesa-backend.onrender.com", "https://api.brevo.com", "https://sandbox.safaricom.co.ke"],
       imgSrc: ["'self'", "data:", "https://res.cloudinary.com"],
-      scriptSrc: [
-        "'self'", 
-        "'unsafe-inline'", 
-        "https://unpkg.com", 
-        "https://fonts.googleapis.com",
-        "https://static.cloudflareinsights.com"
-      ],
-      scriptSrcElem: [
-        "'self'", 
-        "'unsafe-inline'", 
-        "https://unpkg.com", 
-        "https://fonts.googleapis.com",
-        "https://static.cloudflareinsights.com"
-      ],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com", "https://fonts.googleapis.com"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       fontSrc: ["'self'", "https://fonts.gstatic.com", "https://unpkg.com"],
     },
