@@ -220,7 +220,7 @@ async function sendMpesaOrderReceivedEmail(orderData) {
         
         const imageHtml = productImage 
           ? `<img src="${productImage}" style="width:48px;height:48px;object-fit:cover;border-radius:8px;background:#f5f5f5;flex-shrink:0;" onerror="this.style.display='none'">`
-          : `<div style="width:48px;height:48px;background:#f5f5f5;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><span style="color:#ccc;font-size:20px;">🍾</span></div>`;
+          : `<div style="width:48px;height:48px;background:#f5f5f5;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;"><span style="color:#ccc;font-size:20px;"></span></div>`;
         
         return `
           <tr>

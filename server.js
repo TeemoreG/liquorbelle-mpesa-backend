@@ -244,7 +244,7 @@ app.get('/ping', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     status: 'ok',
-    message: '🍾 LiquorBelle API is running',
+    message: 'LiquorBelle API is running',
     version: '1.0.0',
     timestamp: new Date().toISOString(),
     endpoints: {
@@ -378,7 +378,7 @@ async function startServer() {
       console.log(`
 ╔══════════════════════════════════════════════════════════════╗
 ║                                                              ║
-║   🍾 LIQUORBELLE BACKEND SERVER                            ║
+║   LIQUORBELLE BACKEND SERVER                            ║
 ║                                                              ║
 ║   Port: ${PORT}                                              ║
 ║   Database: ✅ Connected                                    ║
@@ -395,9 +395,9 @@ async function startServer() {
 ╚══════════════════════════════════════════════════════════════╝
       `);
       
-      console.log(`📡 Server is ready at http://localhost:${PORT}`);
-      console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
-      console.log(`🌐 CORS allowed origins: ${allowedOrigins.join(', ')}`);
+      console.log(`Server is ready at http://localhost:${PORT}`);
+      console.log(`Health check: http://localhost:${PORT}/api/health`);
+      console.log(`CORS allowed origins: ${allowedOrigins.join(', ')}`);
     });
 
     server.timeout = 120000;
@@ -407,7 +407,7 @@ async function startServer() {
     return server;
 
   } catch (err) {
-    console.error('❌ Failed to start server:', err.message);
+    console.error('Failed to start server:', err.message);
     console.error('Stack:', err.stack);
     throw err;
   }
@@ -426,12 +426,12 @@ async function startServerWithRetry() {
       return;
     } catch (err) {
       retries++;
-      console.log(`❌ Start attempt ${retries} failed. Retrying in ${retries * 5} seconds...`);
+      console.log(`Start attempt ${retries} failed. Retrying in ${retries * 5} seconds...`);
       await new Promise(resolve => setTimeout(resolve, retries * 5000));
     }
   }
   
-  console.error('❌ Failed to start server after multiple attempts');
+  console.error('Failed to start server after multiple attempts');
   process.exit(1);
 }
 
@@ -448,11 +448,11 @@ async function gracefulShutdown(signal) {
   
   try {
     await closeDB();
-    console.log('✅ Database connection closed');
-    console.log('👋 Shutdown complete');
+    console.log('Database connection closed');
+    console.log('Shutdown complete');
     process.exit(0);
   } catch (err) {
-    console.error('❌ Error during shutdown:', err);
+    console.error('Error during shutdown:', err);
     process.exit(1);
   }
 }
@@ -461,12 +461,12 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 process.on('uncaughtException', (err) => {
-  console.error('❌ Uncaught Exception:', err.message);
+  console.error('Uncaught Exception:', err.message);
   console.error('Stack:', err.stack);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise);
+  console.error('Unhandled Rejection at:', promise);
   console.error('Reason:', reason);
 });
 
