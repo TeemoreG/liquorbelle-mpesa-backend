@@ -27,7 +27,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 // ============================================================
-// 1. MIDDLEWARE - MUST BE FIRST (BEFORE ANY ROUTES)
+// 1. MIDDLEWARE 
 // ============================================================
 
 // Security middleware
@@ -54,8 +54,8 @@ app.use(compression());
 const allowedOrigins = [
   'https://teemoreg.github.io',
   'https://liquorbelle-mpesa-backend.onrender.com',
-  'https://liquorbelle.com',
-  'https://www.liquorbelle.com',
+  'https://liquorbelle.co.ke',
+  'https://www.liquorbelle.co.ke',
   'http://localhost:3000',
   'http://localhost:5500',
   'http://127.0.0.1:5500',
