@@ -1,6 +1,4 @@
 const express = require('express');
-const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
 const { getDB } = require('../config/database');
 const { generateToken } = require('../config/passport');
 const { loginLimiter } = require('../config/rateLimits');
@@ -8,16 +6,14 @@ const { requireAdmin } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Constant-time string compare to prevent timing attacks
-function safeCompare(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
+// Plain string compare - both passwords stored as plaintext in DB
+function matchPlain(input, stored) {
+  if (typeof input !== 'string' || typeof stored !== 'string') return false;
+  if (input.length !== stored.length) return false;
+  return input === stored;
 }
 
-// Admin login - bcrypt against admin_settings.admin_credentials
+// Admin login - plaintext compare against admin_settings.admin_credentials
 router.post('/login', loginLimiter, async (req, res) => {
   const { password } = req.body;
 
@@ -31,15 +27,13 @@ router.post('/login', loginLimiter, async (req, res) => {
   }
 
   try {
-    const adminSettings = await db.collection('admin_settings').findOne({ key: 'admin_credentials' });
+    const doc = await db.collection('admin_settings').findOne({ key: 'admin_credentials' });
 
-    if (!adminSettings || !adminSettings.password) {
+    if (!doc || !doc.password) {
       return res.status(401).json({ success: false, message: 'Invalid admin credentials' });
     }
 
-    const isMatch = await bcrypt.compare(password, adminSettings.password);
-
-    if (!isMatch) {
+    if (!matchPlain(password, doc.password)) {
       return res.status(401).json({ success: false, message: 'Invalid admin credentials' });
     }
 
@@ -57,7 +51,7 @@ router.post('/login', loginLimiter, async (req, res) => {
   }
 });
 
-// Cashier login - constant-time compare against CASHIER_PASSWORD env var
+// Cashier login - plaintext compare against admin_settings.cashier_credentials
 router.post('/cashier/login', loginLimiter, async (req, res) => {
   const { password } = req.body;
 
@@ -65,18 +59,22 @@ router.post('/cashier/login', loginLimiter, async (req, res) => {
     return res.status(400).json({ success: false, message: 'Password required' });
   }
 
-  const expected = process.env.CASHIER_PASSWORD;
-
-  if (!expected) {
-    console.error('CASHIER_PASSWORD env var not set');
-    return res.status(503).json({ success: false, message: 'Cashier login not configured' });
-  }
-
-  if (!safeCompare(password, expected)) {
-    return res.status(401).json({ success: false, message: 'Invalid cashier credentials' });
+  const db = getDB();
+  if (!db) {
+    return res.status(503).json({ success: false, message: 'Database connecting...' });
   }
 
   try {
+    const doc = await db.collection('admin_settings').findOne({ key: 'cashier_credentials' });
+
+    if (!doc || !doc.password) {
+      return res.status(401).json({ success: false, message: 'Invalid cashier credentials' });
+    }
+
+    if (!matchPlain(password, doc.password)) {
+      return res.status(401).json({ success: false, message: 'Invalid cashier credentials' });
+    }
+
     const token = generateToken('cashier', 'cashier');
 
     res.json({
@@ -91,7 +89,7 @@ router.post('/cashier/login', loginLimiter, async (req, res) => {
   }
 });
 
-// Update admin and/or cashier passwords - admin only
+// Update passwords - admin only, both plaintext
 router.post('/update-passwords', requireAdmin, async (req, res) => {
   const { adminPassword, cashierPassword } = req.body;
 
@@ -116,20 +114,18 @@ router.post('/update-passwords', requireAdmin, async (req, res) => {
     const updated = [];
 
     if (adminPassword) {
-      const hash = await bcrypt.hash(adminPassword, 10);
       await db.collection('admin_settings').updateOne(
         { key: 'admin_credentials' },
-        { $set: { key: 'admin_credentials', password: hash, updated_at: new Date() } },
+        { $set: { key: 'admin_credentials', password: adminPassword, updated_at: new Date() } },
         { upsert: true }
       );
       updated.push('admin');
     }
 
     if (cashierPassword) {
-      const hash = await bcrypt.hash(cashierPassword, 10);
       await db.collection('admin_settings').updateOne(
         { key: 'cashier_credentials' },
-        { $set: { key: 'cashier_credentials', password: hash, updated_at: new Date() } },
+        { $set: { key: 'cashier_credentials', password: cashierPassword, updated_at: new Date() } },
         { upsert: true }
       );
       updated.push('cashier');
