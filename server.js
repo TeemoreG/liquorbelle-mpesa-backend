@@ -8,9 +8,9 @@ const session = require('express-session');
 const passport = require('passport');
 const { connectDB, getDB, closeDB } = require('./config/database');
 const { validateEnv } = require('./config/env');
-const { 
-  generalLimiter, 
-  otpLimiter, 
+const {
+  generalLimiter,
+  otpLimiter,
   stkLimiter,
   orderCreateLimiter,
   adminLimiter,
@@ -20,15 +20,11 @@ const {
 const { orderCache, productCache, statsCache } = require('./utils/cache');
 const { loadPasswordsFromDB } = require('./utils/passwords');
 
-// ==================== VALIDATE ENVIRONMENT ====================
+// Validate environment variables before anything else
 validateEnv();
 
 const app = express();
 const PORT = process.env.PORT || 10000;
-
-// ============================================================
-// 1. MIDDLEWARE 
-// ============================================================
 
 // Security middleware
 app.use(helmet({
@@ -36,7 +32,13 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      connectSrc: ["'self'", "https://liquorbelle-mpesa-backend.onrender.com", "https://api.brevo.com", "https://sandbox.safaricom.co.ke"],
+      connectSrc: [
+        "'self'",
+        "https://liquorbelle-mpesa-backend.onrender.com",
+        "https://api.brevo.com",
+        "https://sandbox.safaricom.co.ke",
+        "https://api.safaricom.co.ke"
+      ],
       imgSrc: ["'self'", "data:", "https://res.cloudinary.com"],
       scriptSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com", "https://fonts.googleapis.com"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
@@ -45,17 +47,20 @@ app.use(helmet({
   },
 }));
 
-// Body parser - MUST BE BEFORE ROUTES
+// Body parsers
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(compression());
 
-// CORS
+// CORS configuration
 const allowedOrigins = [
   'https://teemoreg.github.io',
+  'http://teemoreg.github.io',
   'https://liquorbelle-mpesa-backend.onrender.com',
   'https://liquorbelle.co.ke',
   'https://www.liquorbelle.co.ke',
+  'http://liquorbelle.co.ke',
+  'http://www.liquorbelle.co.ke',
   'http://localhost:3000',
   'http://localhost:5500',
   'http://127.0.0.1:5500',
@@ -69,21 +74,25 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function(origin, callback) {
+    // Allow requests with no origin (curl, mobile apps, server-to-server)
     if (!origin) return callback(null, true);
-    if (origin.match(/^http:\/\/localhost:\d+$/)) {
-      return callback(null, true);
-    }
-    if (origin.match(/^http:\/\/127\.0\.0\.1:\d+$/)) {
-      return callback(null, true);
-    }
-    if (origin === 'null' || origin === 'file://') {
-      return callback(null, true);
-    }
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      return callback(null, true);
-    }
-    console.warn(`⚠️ CORS blocked origin: ${origin}`);
-    callback(new Error('Not allowed by CORS'));
+
+    // Allow any localhost or 127.0.0.1 port
+    if (/^http:\/\/localhost:\d+$/.test(origin)) return callback(null, true);
+    if (/^http:\/\/127\.0\.0\.1:\d+$/.test(origin)) return callback(null, true);
+
+    // Allow file protocol and null origin
+    if (origin === 'null' || origin === 'file://') return callback(null, true);
+
+    // Allow Google Translate proxy domains
+    if (/\.translate\.goog$/.test(origin)) return callback(null, true);
+
+    // Allow exact whitelist match
+    if (allowedOrigins.indexOf(origin) !== -1) return callback(null, true);
+
+    // Block silently instead of throwing so logs do not fill with 500 errors
+    console.warn(`CORS blocked origin: ${origin}`);
+    return callback(null, false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -91,12 +100,12 @@ app.use(cors({
   exposedHeaders: ['Content-Range', 'X-Content-Range']
 }));
 
-// Session & Passport
+// Session and Passport
 app.use(session({
   secret: process.env.SESSION_SECRET || 'your-secret-key',
   resave: false,
   saveUninitialized: false,
-  cookie: { 
+  cookie: {
     secure: process.env.NODE_ENV === 'production',
     maxAge: 24 * 60 * 60 * 1000
   }
@@ -105,16 +114,14 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Logging
+// HTTP request logging
 app.use(morgan('combined', {
   skip: (req) => req.path === '/api/health' || req.path === '/'
 }));
 
 app.set('trust proxy', 1);
 
-// ============================================================
-// 2. RATE LIMITING
-// ============================================================
+// Rate limiting
 app.use('/api/', generalLimiter);
 
 app.use('/api/send-email-otp', otpLimiter);
@@ -138,26 +145,18 @@ app.use('/api/geocode/', geocodeLimiter);
 app.use('/api/auth/admin/login', loginLimiter);
 app.use('/api/auth/cashier/login', loginLimiter);
 
-// ============================================================
-// 3. REQUEST LOGGING (Debug)
-// ============================================================
+// Debug request logger for development
 app.use((req, res, next) => {
   if (process.env.NODE_ENV === 'development' && req.path.startsWith('/api/')) {
-    console.log(`📥 ${req.method} ${req.path} - Origin: ${req.headers.origin || 'unknown'}`);
+    console.log(`${req.method} ${req.path} - Origin: ${req.headers.origin || 'unknown'}`);
   }
   next();
 });
 
-// ============================================================
-// 4. EXPOSE CACHE
-// ============================================================
+// Expose caches to route handlers
 app.set('orderCache', orderCache);
 app.set('productCache', productCache);
 app.set('statsCache', statsCache);
-
-// ============================================================
-// 5. ROUTES - AFTER ALL MIDDLEWARE
-// ============================================================
 
 // Auth routes
 app.use('/api/auth', require('./routes/auth'));
@@ -189,10 +188,10 @@ app.use('/api', require('./routes/otp'));
 // Geocode routes
 app.use('/api/geocode', require('./routes/geocode'));
 
-// ✅ Delivery routes (Public)
+// Delivery routes (public)
 app.use('/api', require('./routes/delivery'));
 
-// ✅ Delivery routes (Admin - Added to handle admin settings and zones)
+// Delivery routes (admin)
 app.use('/api/admin', require('./routes/delivery'));
 
 // Categories routes
@@ -201,11 +200,7 @@ app.use('/api/categories', require('./routes/categories'));
 // Order tracking routes
 app.use('/api/orders/track', require('./routes/order-tracking'));
 
-// ❌ DELETED: Delivery zones routes (File removed, merged into delivery.js)
-
-// ============================================================
-// 6. HEALTH CHECK & ROOT
-// ============================================================
+// Health check endpoint with full status
 app.get('/api/health', (req, res) => {
   const db = getDB();
   const health = {
@@ -260,11 +255,7 @@ app.get('/', (req, res) => {
   });
 });
 
-// ============================================================
-// 7. ERROR HANDLING - MUST BE AFTER ROUTES
-// ============================================================
-
-// 404 Handler
+// 404 handler
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -277,7 +268,7 @@ app.use((req, res) => {
 
 // Global error handler
 app.use((err, req, res, next) => {
-  console.error('❌ Server error:', {
+  console.error('Server error:', {
     message: err.message,
     stack: err.stack,
     path: req.path,
@@ -286,7 +277,7 @@ app.use((err, req, res, next) => {
     query: req.query,
     params: req.params
   });
-  
+
   if (err.name === 'ValidationError') {
     return res.status(400).json({
       success: false,
@@ -295,7 +286,7 @@ app.use((err, req, res, next) => {
       timestamp: new Date().toISOString()
     });
   }
-  
+
   if (err.name === 'MongoError' || err.name === 'MongoServerError') {
     return res.status(500).json({
       success: false,
@@ -304,12 +295,12 @@ app.use((err, req, res, next) => {
       timestamp: new Date().toISOString()
     });
   }
-  
+
   const statusCode = err.status || 500;
   res.status(statusCode).json({
     success: false,
     message: err.message || 'Internal server error',
-    ...(process.env.NODE_ENV === 'development' && { 
+    ...(process.env.NODE_ENV === 'development' && {
       stack: err.stack,
       path: req.path,
       method: req.method
@@ -318,29 +309,27 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ============================================================
-// 8. START SERVER
-// ============================================================
+// Start server with DB connection and background jobs
 async function startServer() {
   try {
-    console.log('🔄 Connecting to MongoDB...');
+    console.log('Connecting to MongoDB...');
     await connectDB();
-    console.log('✅ MongoDB connected successfully');
-    
-    await loadPasswordsFromDB();
-    console.log('✅ Password hashes loaded');
+    console.log('MongoDB connected successfully');
 
-    // Auto-clear stats cache daily
+    await loadPasswordsFromDB();
+    console.log('Password hashes loaded');
+
+    // Clear stats cache daily
     setInterval(() => {
       statsCache.del('stats_daily');
       statsCache.del('stats_weekly');
       statsCache.del('stats_monthly');
       statsCache.del('legacy_stats');
       statsCache.del('category_stats');
-      console.log('✅ Stats cache cleared (daily refresh)');
+      console.log('Stats cache cleared (daily refresh)');
     }, 24 * 60 * 60 * 1000);
 
-    // Auto-clear OTPs every hour
+    // Clear expired OTPs hourly
     setInterval(async () => {
       try {
         const db = getDB();
@@ -349,7 +338,7 @@ async function startServer() {
             created_at: { $lt: new Date(Date.now() - 60 * 60 * 1000) }
           });
           if (result.deletedCount > 0) {
-            console.log(`✅ Cleared ${result.deletedCount} expired OTPs`);
+            console.log(`Cleared ${result.deletedCount} expired OTPs`);
           }
         }
       } catch (err) {
@@ -357,7 +346,7 @@ async function startServer() {
       }
     }, 60 * 60 * 1000);
 
-    // Auto-clear expired sessions every 12 hours
+    // Clear expired sessions every 12 hours
     setInterval(async () => {
       try {
         const db = getDB();
@@ -366,7 +355,7 @@ async function startServer() {
             expiresAt: { $lt: new Date() }
           });
           if (result.deletedCount > 0) {
-            console.log(`✅ Cleared ${result.deletedCount} expired sessions`);
+            console.log(`Cleared ${result.deletedCount} expired sessions`);
           }
         }
       } catch (err) {
@@ -375,26 +364,19 @@ async function startServer() {
     }, 12 * 60 * 60 * 1000);
 
     const server = app.listen(PORT, '0.0.0.0', () => {
-      console.log(`
-╔══════════════════════════════════════════════════════════════╗
-║                                                              ║
-║   LIQUORBELLE BACKEND SERVER                            ║
-║                                                              ║
-║   Port: ${PORT}                                              ║
-║   Database: ✅ Connected                                    ║
-║   Environment: ${process.env.NODE_ENV || 'development'}      ║
-║   Uptime: ${process.uptime()}s                              ║
-║                                                              ║
-║   Email: ${process.env.BREVO_API_KEY ? '✅ Enabled' : '❌ Disabled'}  ║
-║   M-PESA: ${process.env.CONSUMER_KEY ? '✅ Enabled' : '❌ Disabled'}  ║
-║   Google Sheets: ${process.env.GOOGLE_SHEETS_API_KEY ? '✅ Enabled' : '❌ Disabled'} ║
-║                                                              ║
-║   Auth: PIN-based with Email OTP                            ║
-║   CORS: ${allowedOrigins.length} origins allowed              ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝
-      `);
-      
+      console.log('==============================================');
+      console.log('   LIQUORBELLE BACKEND SERVER');
+      console.log('==============================================');
+      console.log(`   Port: ${PORT}`);
+      console.log('   Database: Connected');
+      console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`   Uptime: ${process.uptime()}s`);
+      console.log(`   Email: ${process.env.BREVO_API_KEY ? 'Enabled' : 'Disabled'}`);
+      console.log(`   M-PESA: ${process.env.CONSUMER_KEY ? 'Enabled' : 'Disabled'}`);
+      console.log(`   Google Sheets: ${process.env.GOOGLE_SHEETS_API_KEY ? 'Enabled' : 'Disabled'}`);
+      console.log('   Auth: PIN-based with Email OTP');
+      console.log(`   CORS: ${allowedOrigins.length} origins allowed`);
+      console.log('==============================================');
       console.log(`Server is ready at http://localhost:${PORT}`);
       console.log(`Health check: http://localhost:${PORT}/api/health`);
       console.log(`CORS allowed origins: ${allowedOrigins.join(', ')}`);
@@ -413,13 +395,11 @@ async function startServer() {
   }
 }
 
-// ============================================================
-// 9. RETRY MECHANISM
-// ============================================================
+// Retry server startup on failure
 async function startServerWithRetry() {
   let retries = 0;
   const maxRetries = 5;
-  
+
   while (retries < maxRetries) {
     try {
       await startServer();
@@ -430,22 +410,20 @@ async function startServerWithRetry() {
       await new Promise(resolve => setTimeout(resolve, retries * 5000));
     }
   }
-  
+
   console.error('Failed to start server after multiple attempts');
   process.exit(1);
 }
 
-// ============================================================
-// 10. GRACEFUL SHUTDOWN
-// ============================================================
+// Graceful shutdown handler
 let isShuttingDown = false;
 
 async function gracefulShutdown(signal) {
   if (isShuttingDown) return;
   isShuttingDown = true;
-  
-  console.log(`🛑 ${signal} received, starting graceful shutdown...`);
-  
+
+  console.log(`${signal} received, starting graceful shutdown...`);
+
   try {
     await closeDB();
     console.log('Database connection closed');
@@ -470,9 +448,6 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('Reason:', reason);
 });
 
-// ============================================================
-// 11. START
-// ============================================================
 startServerWithRetry();
 
 module.exports = app;
