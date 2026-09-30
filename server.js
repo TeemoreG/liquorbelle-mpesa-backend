@@ -160,7 +160,6 @@ app.set('statsCache', statsCache);
 
 // Auth routes
 app.use('/api/auth', require('./routes/auth'));
-app.use('/api/auth', require('./routes/google-auth'));
 
 // Admin auth routes
 app.use('/api/admin', require('./routes/admin-auth'));
