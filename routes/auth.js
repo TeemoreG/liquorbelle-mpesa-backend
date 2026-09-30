@@ -423,7 +423,7 @@ router.get('/google/callback',
         return res.redirect('/login?error=User not found');
       }
 
-      // ✅ Check if user is deleted
+      // Check if user is deleted
       if (freshUser.deleted === true) {
         return res.redirect('/login?error=Account deactivated');
       }
@@ -435,15 +435,22 @@ router.get('/google/callback',
       const hasPin = !!freshUser.pin;
       const isNew = !hasPin;
       
-      // ✅ Check if this is a newly linked account (user existed but no googleId before)
-      // If googleId was just added and googleCompleted is false, it's a linked account
+      // Check if this is a newly linked account
       const isLinked = freshUser.googleId && freshUser.googleCompleted === false && freshUser.pin;
       
       console.log(`📊 Google callback: email=${freshUser.email}, hasPin=${hasPin}, isNew=${isNew}, isLinked=${isLinked}`);
       
-      res.redirect(
-        `${frontendUrl}/index.html?google_auth=success&token=${token}&email=${encodeURIComponent(freshUser.email)}&name=${encodeURIComponent(freshUser.name)}&phone=${encodeURIComponent(freshUser.phone || '')}&is_new=${isNew}&is_linked=${isLinked}`
-      );
+      if (isNew) {
+        // No PIN yet — go straight to signup completion (no index flash)
+        res.redirect(
+          `${frontendUrl}/signup.html?google=1&google_auth=success&token=${token}&email=${encodeURIComponent(freshUser.email)}&name=${encodeURIComponent(freshUser.name)}&phone=${encodeURIComponent(freshUser.phone || '')}`
+        );
+      } else {
+        // Existing user with PIN — normal login flow
+        res.redirect(
+          `${frontendUrl}/index.html?google_auth=success&token=${token}&email=${encodeURIComponent(freshUser.email)}&name=${encodeURIComponent(freshUser.name)}&phone=${encodeURIComponent(freshUser.phone || '')}&is_new=false&is_linked=${isLinked}`
+        );
+      }
       
     } catch (err) {
       console.error('❌ Google callback error:', err);
@@ -457,7 +464,7 @@ router.get('/google/callback',
    ============================================================ */
 
 router.post('/complete-google-registration', [
-  body('token').notEmpty().withMessage('Google token required'),
+  body('token').notEmpty().withMessage('Token required'),
   body('name').notEmpty().withMessage('Name required').isLength({ min: 2, max: 100 }),
   body('phone').notEmpty().withMessage('Phone number required')
     .custom((value) => isValidPhone(value)).withMessage('Invalid phone number format (e.g., 0712345678)'),
@@ -468,49 +475,36 @@ router.post('/complete-google-registration', [
   const errors = validationResult(req);
   if (!errors.isEmpty()) return validationFailed(res, errors);
 
-  if (!googleClient) {
-    console.error('❌ GOOGLE_CLIENT_ID not configured');
-    return res.status(500).json({ success: false, message: 'Google sign-in not configured' });
-  }
-
   const { token, name, phone, pin } = req.body;
   const db = getDB();
   if (!db) return dbUnavailable(res);
 
   try {
-    let payload;
-    try {
-      const ticket = await googleClient.verifyIdToken({
-        idToken: token,
-        audience: process.env.GOOGLE_CLIENT_ID
-      });
-      payload = ticket.getPayload();
-    } catch (verifyErr) {
-      console.error('❌ Google token verification failed:', verifyErr.message);
-      return res.status(401).json({ success: false, message: 'Invalid or expired Google token' });
+    // Verify our own JWT (issued by /google/callback)
+    const { verifyToken } = require('../config/passport');
+    const decoded = verifyToken(token);
+
+    if (!decoded || !decoded.userId) {
+      return res.status(401).json({ success: false, message: 'Invalid or expired session. Please sign in with Google again.' });
     }
 
-    if (!payload || !payload.email) {
-      return res.status(401).json({ success: false, message: 'Google token did not contain a valid email' });
-    }
-    if (payload.email_verified === false) {
-      return res.status(401).json({ success: false, message: 'Google email is not verified' });
-    }
-
-    const email = normalizeEmail(payload.email);
     const formattedPhone = formatPhone(phone);
+    const { ObjectId } = require('mongodb');
 
-    let user = await db.collection('customers').findOne({ email });
+    let user = await db.collection('customers').findOne({ _id: new ObjectId(decoded.userId) });
 
-    // ✅ Check if user is deleted
-    if (user && user.deleted === true) {
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Customer not found' });
+    }
+
+    if (user.deleted === true) {
       return res.status(403).json({
         success: false,
         message: 'This account has been deactivated. Please contact support.'
       });
     }
 
-    if (user && user.pin) {
+    if (user.pin) {
       return res.status(409).json({
         success: false,
         message: 'Account already has a PIN set. Please login normally.'
@@ -520,52 +514,30 @@ router.post('/complete-google-registration', [
     const hashedPin = await bcrypt.hash(pin, BCRYPT_ROUNDS);
     const now = new Date();
 
-    if (user) {
-      // User exists but no PIN - set PIN
-      await db.collection('customers').updateOne(
-        { _id: user._id },
-        {
-          $set: {
-            pin: hashedPin,
-            phone: formattedPhone,
-            name: name.trim(),
-            authMethod: user.googleId ? 'google' : 'email',
-            googleCompleted: true,
-            updatedAt: now,
-            lastLoginAt: now
-          }
+    await db.collection('customers').updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          pin: hashedPin,
+          phone: formattedPhone,
+          name: name.trim(),
+          authMethod: user.googleId ? 'google' : 'email',
+          googleCompleted: true,
+          updatedAt: now,
+          lastLoginAt: now
         }
-      );
-      
-      user = await db.collection('customers').findOne({ _id: user._id });
-      console.log(`✅ PIN set for existing user (${user.authMethod}): ${email}`);
-    } else {
-      // Brand new user - create with PIN
-      const newUser = {
-        email,
-        name: name.trim(),
-        phone: formattedPhone,
-        pin: hashedPin,
-        googleId: payload.sub,
-        authMethod: 'google',
-        googleCompleted: true,
-        deleted: false,
-        createdAt: now,
-        updatedAt: now,
-        lastLoginAt: now,
-        orderHistory: [],
-        favorites: []
-      };
-      const result = await db.collection('customers').insertOne(newUser);
-      user = { ...newUser, _id: result.insertedId };
-      console.log(`✅ New Google user registered with PIN: ${email}`);
-    }
+      }
+    );
+
+    user = await db.collection('customers').findOne({ _id: user._id });
 
     const newToken = generateToken(user._id.toString(), 'customer');
 
+    console.log(`✅ Google completion for ${user.email} — PIN set`);
+
     res.json({
       success: true,
-      message: user.pin ? 'Account updated successfully' : 'Account created successfully',
+      message: 'Account created successfully',
       token: newToken,
       customer: publicCustomer(user)
     });
@@ -597,7 +569,7 @@ router.post('/check-email', [
       projection: { _id: 1, deleted: 1 } 
     });
     
-    // ✅ If user exists but is deleted, return exists: true but with a flag
+    // If user exists but is deleted, return exists: true but with a flag
     if (existingUser) {
       if (existingUser.deleted === true) {
         return res.json({ 
@@ -657,7 +629,7 @@ router.post('/check-user', [
       if (formattedPhone && existingUser.phone === formattedPhone) fields.push('phone');
       if (name && existingUser.name === name.trim()) fields.push('name');
 
-      // ✅ Check if deleted
+      // Check if deleted
       if (existingUser.deleted === true) {
         return res.json({
           success: true,
