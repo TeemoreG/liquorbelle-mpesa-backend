@@ -443,8 +443,8 @@ router.get('/google/callback',
       if (isNew) {
         // No PIN yet — go straight to signup completion (no index flash)
         res.redirect(
-          `${frontendUrl}/signup.html?google=1&google_auth=success&token=${token}&email=${encodeURIComponent(freshUser.email)}&name=${encodeURIComponent(freshUser.name)}&phone=${encodeURIComponent(freshUser.phone || '')}`
-        );
+        `${frontendUrl}/signup.html?google=1&google_auth=success&token=${token}&email=${encodeURIComponent(freshUser.email)}&name=${encodeURIComponent(freshUser.name)}&phone=${encodeURIComponent(freshUser.phone || '')}`
+          );
       } else {
         // Existing user with PIN — normal login flow
         res.redirect(
